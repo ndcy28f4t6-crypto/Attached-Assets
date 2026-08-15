@@ -6,8 +6,17 @@
  * OpenAPI spec version: 0.1.0
  */
 
+export * from './appState';
 export * from './calendarEvent';
 export * from './calendarStatus';
+export * from './capture';
 export * from './errorResponse';
 export * from './getCalendarEventsParams';
 export * from './healthStatus';
+export * from './preferences';
+export * from './preferencesCalendarConnected';
+export * from './preferencesFontStyle';
+export * from './project';
+export * from './task';
+export * from './taskPriority';
+export * from './waitingFor';

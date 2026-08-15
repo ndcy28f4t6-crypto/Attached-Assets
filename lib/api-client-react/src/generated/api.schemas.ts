@@ -33,6 +33,84 @@ export interface ErrorResponse {
   error: string;
 }
 
+export type TaskPriority = typeof TaskPriority[keyof typeof TaskPriority];
+
+
+export const TaskPriority = {
+  high: 'high',
+  medium: 'medium',
+  low: 'low',
+} as const;
+
+export interface Task {
+  id: string;
+  title: string;
+  project: string;
+  due: string;
+  time?: string;
+  estTime?: string;
+  priority: TaskPriority;
+  done: boolean;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  description: string;
+  color: string;
+  goal: string;
+}
+
+export interface Capture {
+  id: string;
+  text: string;
+  createdAt: string;
+  converted: boolean;
+}
+
+export type PreferencesFontStyle = typeof PreferencesFontStyle[keyof typeof PreferencesFontStyle];
+
+
+export const PreferencesFontStyle = {
+  modern: 'modern',
+  classic: 'classic',
+  rounded: 'rounded',
+} as const;
+
+export type PreferencesCalendarConnected = typeof PreferencesCalendarConnected[keyof typeof PreferencesCalendarConnected];
+
+
+export const PreferencesCalendarConnected = {
+  none: 'none',
+  google: 'google',
+  outlook: 'outlook',
+} as const;
+
+export interface Preferences {
+  dark: boolean;
+  accent: string;
+  memory: boolean;
+  reminders: boolean;
+  sectionOrder: string[];
+  fontStyle: PreferencesFontStyle;
+  calendarConnected: PreferencesCalendarConnected;
+}
+
+export interface WaitingFor {
+  id: string;
+  person: string;
+  item: string;
+  addedAt: string;
+}
+
+export interface AppState {
+  tasks: Task[];
+  projects: Project[];
+  captures: Capture[];
+  preferences: Preferences;
+  waitingFor: WaitingFor[];
+}
+
 export type GetCalendarEventsParams = {
 /**
  * ISO date string (YYYY-MM-DD), defaults to today

@@ -12,6 +12,8 @@ tags:
     description: Health operations
   - name: calendar
     description: Calendar operations
+  - name: app
+    description: App state operations
 paths:
   /healthz:
     get:
@@ -65,6 +67,37 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CalendarStatus"
+  /app/state:
+    get:
+      operationId: getAppState
+      tags: [app]
+      summary: Get persisted app state
+      description: Returns the saved app state. If no state has been saved yet, returns the seed state and persists it.
+      responses:
+        "200":
+          description: App state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppState"
+    put:
+      operationId: saveAppState
+      tags: [app]
+      summary: Save app state
+      description: Replaces the entire persisted app state.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AppState"
+      responses:
+        "200":
+          description: Saved app state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppState"
 components:
   schemas:
     HealthStatus:
@@ -110,3 +143,106 @@ components:
       properties:
         error:
           type: string
+    Task:
+      type: object
+      required: [id, title, project, due, priority, done]
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        project:
+          type: string
+        due:
+          type: string
+        time:
+          type: string
+        estTime:
+          type: string
+        priority:
+          type: string
+          enum: [high, medium, low]
+        done:
+          type: boolean
+    Project:
+      type: object
+      required: [id, name, description, color, goal]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        color:
+          type: string
+        goal:
+          type: string
+    Capture:
+      type: object
+      required: [id, text, createdAt, converted]
+      properties:
+        id:
+          type: string
+        text:
+          type: string
+        createdAt:
+          type: string
+        converted:
+          type: boolean
+    Preferences:
+      type: object
+      required: [dark, accent, memory, reminders, sectionOrder, fontStyle, calendarConnected]
+      properties:
+        dark:
+          type: boolean
+        accent:
+          type: string
+        memory:
+          type: boolean
+        reminders:
+          type: boolean
+        sectionOrder:
+          type: array
+          items:
+            type: string
+        fontStyle:
+          type: string
+          enum: [modern, classic, rounded]
+        calendarConnected:
+          type: string
+          enum: [none, google, outlook]
+    WaitingFor:
+      type: object
+      required: [id, person, item, addedAt]
+      properties:
+        id:
+          type: string
+        person:
+          type: string
+        item:
+          type: string
+        addedAt:
+          type: string
+    AppState:
+      type: object
+      required: [tasks, projects, captures, preferences, waitingFor]
+      properties:
+        tasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/Task"
+        projects:
+          type: array
+          items:
+            $ref: "#/components/schemas/Project"
+        captures:
+          type: array
+          items:
+            $ref: "#/components/schemas/Capture"
+        preferences:
+          $ref: "#/components/schemas/Preferences"
+        waitingFor:
+          type: array
+          items:
+            $ref: "#/components/schemas/WaitingFor"

@@ -47,3 +47,136 @@ export const GetCalendarStatusResponse = zod.object({
 })
 
 
+/**
+ * Returns the saved app state. If no state has been saved yet, returns the seed state and persists it.
+ * @summary Get persisted app state
+ */
+export const GetAppStateResponse = zod.object({
+  "tasks": zod.array(zod.object({
+  "id": zod.string(),
+  "title": zod.string(),
+  "project": zod.string(),
+  "due": zod.string(),
+  "time": zod.string().optional(),
+  "estTime": zod.string().optional(),
+  "priority": zod.enum(['high', 'medium', 'low']),
+  "done": zod.boolean()
+})),
+  "projects": zod.array(zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "description": zod.string(),
+  "color": zod.string(),
+  "goal": zod.string()
+})),
+  "captures": zod.array(zod.object({
+  "id": zod.string(),
+  "text": zod.string(),
+  "createdAt": zod.string(),
+  "converted": zod.boolean()
+})),
+  "preferences": zod.object({
+  "dark": zod.boolean(),
+  "accent": zod.string(),
+  "memory": zod.boolean(),
+  "reminders": zod.boolean(),
+  "sectionOrder": zod.array(zod.string()),
+  "fontStyle": zod.enum(['modern', 'classic', 'rounded']),
+  "calendarConnected": zod.enum(['none', 'google', 'outlook'])
+}),
+  "waitingFor": zod.array(zod.object({
+  "id": zod.string(),
+  "person": zod.string(),
+  "item": zod.string(),
+  "addedAt": zod.string()
+}))
+})
+
+
+/**
+ * Replaces the entire persisted app state.
+ * @summary Save app state
+ */
+export const SaveAppStateBody = zod.object({
+  "tasks": zod.array(zod.object({
+  "id": zod.string(),
+  "title": zod.string(),
+  "project": zod.string(),
+  "due": zod.string(),
+  "time": zod.string().optional(),
+  "estTime": zod.string().optional(),
+  "priority": zod.enum(['high', 'medium', 'low']),
+  "done": zod.boolean()
+})),
+  "projects": zod.array(zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "description": zod.string(),
+  "color": zod.string(),
+  "goal": zod.string()
+})),
+  "captures": zod.array(zod.object({
+  "id": zod.string(),
+  "text": zod.string(),
+  "createdAt": zod.string(),
+  "converted": zod.boolean()
+})),
+  "preferences": zod.object({
+  "dark": zod.boolean(),
+  "accent": zod.string(),
+  "memory": zod.boolean(),
+  "reminders": zod.boolean(),
+  "sectionOrder": zod.array(zod.string()),
+  "fontStyle": zod.enum(['modern', 'classic', 'rounded']),
+  "calendarConnected": zod.enum(['none', 'google', 'outlook'])
+}),
+  "waitingFor": zod.array(zod.object({
+  "id": zod.string(),
+  "person": zod.string(),
+  "item": zod.string(),
+  "addedAt": zod.string()
+}))
+})
+
+export const SaveAppStateResponse = zod.object({
+  "tasks": zod.array(zod.object({
+  "id": zod.string(),
+  "title": zod.string(),
+  "project": zod.string(),
+  "due": zod.string(),
+  "time": zod.string().optional(),
+  "estTime": zod.string().optional(),
+  "priority": zod.enum(['high', 'medium', 'low']),
+  "done": zod.boolean()
+})),
+  "projects": zod.array(zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "description": zod.string(),
+  "color": zod.string(),
+  "goal": zod.string()
+})),
+  "captures": zod.array(zod.object({
+  "id": zod.string(),
+  "text": zod.string(),
+  "createdAt": zod.string(),
+  "converted": zod.boolean()
+})),
+  "preferences": zod.object({
+  "dark": zod.boolean(),
+  "accent": zod.string(),
+  "memory": zod.boolean(),
+  "reminders": zod.boolean(),
+  "sectionOrder": zod.array(zod.string()),
+  "fontStyle": zod.enum(['modern', 'classic', 'rounded']),
+  "calendarConnected": zod.enum(['none', 'google', 'outlook'])
+}),
+  "waitingFor": zod.array(zod.object({
+  "id": zod.string(),
+  "person": zod.string(),
+  "item": zod.string(),
+  "addedAt": zod.string()
+}))
+})
+
+

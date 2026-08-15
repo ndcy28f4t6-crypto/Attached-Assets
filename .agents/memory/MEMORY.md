@@ -1,0 +1,1 @@
+- [API client regeneration](api-client-regen.md) — after changing openapi.yaml, run orval then rebuild dependent packages before typechecking consumers.

@@ -6,16 +6,21 @@
  * OpenAPI spec version: 0.1.0
  */
 import {
+  useMutation,
   useQuery
 } from '@tanstack/react-query';
 import type {
+  MutationFunction,
   QueryFunction,
   QueryKey,
+  UseMutationOptions,
+  UseMutationResult,
   UseQueryOptions,
   UseQueryResult
 } from '@tanstack/react-query';
 
 import type {
+  AppState,
   CalendarEvent,
   CalendarStatus,
   ErrorResponse,
@@ -24,7 +29,7 @@ import type {
 } from './api.schemas';
 
 import { customFetch } from '../custom-fetch';
-import type { ErrorType } from '../custom-fetch';
+import type { ErrorType , BodyType } from '../custom-fetch';
 
 type AwaitedInput<T> = PromiseLike<T> | T;
 
@@ -288,4 +293,154 @@ export function useGetCalendarStatus<TData = Awaited<ReturnType<typeof getCalend
 
 
 
+
+export const getGetAppStateUrl = () => {
+
+
+
+
+  return `/api/app/state`
+}
+
+/**
+ * Returns the saved app state. If no state has been saved yet, returns the seed state and persists it.
+ * @summary Get persisted app state
+ */
+export const getAppState = async ( options?: Parameters<typeof customFetch>[1]): Promise<AppState> => {
+
+  return customFetch<AppState>(getGetAppStateUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetAppStateQueryKey = () => {
+    return [
+    `/api/app/state`
+    ] as const;
+    }
+
+
+export const getGetAppStateQueryOptions = <TData = Awaited<ReturnType<typeof getAppState>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getAppState>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetAppStateQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getAppState>>> = ({ signal }) => getAppState({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getAppState>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetAppStateQueryResult = NonNullable<Awaited<ReturnType<typeof getAppState>>>
+export type GetAppStateQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Get persisted app state
+ */
+
+export function useGetAppState<TData = Awaited<ReturnType<typeof getAppState>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getAppState>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetAppStateQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getSaveAppStateUrl = () => {
+
+
+
+
+  return `/api/app/state`
+}
+
+/**
+ * Replaces the entire persisted app state.
+ * @summary Save app state
+ */
+export const saveAppState = async (appState: AppState, options?: Parameters<typeof customFetch>[1]): Promise<AppState> => {
+
+  return customFetch<AppState>(getSaveAppStateUrl(),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(appState)
+  }
+);}
+
+
+
+
+
+export const getSaveAppStateMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof saveAppState>>, TError,{data: BodyType<AppState>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof saveAppState>>, TError,{data: BodyType<AppState>}, TContext> => {
+
+const mutationKey = ['saveAppState'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof saveAppState>>, {data: BodyType<AppState>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  saveAppState(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type SaveAppStateMutationResult = NonNullable<Awaited<ReturnType<typeof saveAppState>>>
+    export type SaveAppStateMutationBody = BodyType<AppState>
+    export type SaveAppStateMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Save app state
+ */
+export const useSaveAppState = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof saveAppState>>, TError,{data: BodyType<AppState>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof saveAppState>>,
+        TError,
+        {data: BodyType<AppState>},
+        TContext
+      > => {
+      return useMutation(getSaveAppStateMutationOptions(options));
+    }
 

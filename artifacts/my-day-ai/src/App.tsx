@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useState, useRef } from 'react';
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
@@ -11,10 +11,20 @@ import {
   Sparkles, Sun, Trash2, UserRound, Volume2, WandSparkles, X
 } from 'lucide-react';
 import { Link, Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
-import { useGetCalendarEvents, useGetCalendarStatus } from '@workspace/api-client-react';
+import {
+  useGetCalendarEvents,
+  useGetCalendarStatus,
+  useGetAppState,
+  useSaveAppState,
+} from '@workspace/api-client-react';
+import type { AppState as ServerAppState } from '@workspace/api-client-react';
 
 const queryClient = new QueryClient();
-const STORAGE_KEY = 'my-day-ai-state-v1';
+
+// Legacy localStorage key – read once for migration, never written again
+const LEGACY_STORAGE_KEY = 'my-day-ai-state-v1';
+// Flag so we only attempt the migration once per browser
+const MIGRATION_FLAG_KEY = 'my-day-ai-migrated-v1';
 
 const QUOTES = [
   "Progress, not perfection.",
@@ -55,50 +65,81 @@ type Preferences = { dark: boolean; accent: string; memory: boolean; reminders: 
 type WaitingFor = { id: string; person: string; item: string; addedAt: string };
 type AppState = { tasks: Task[]; projects: Project[]; captures: Capture[]; preferences: Preferences; waitingFor: WaitingFor[] };
 
-const seedState: AppState = {
-  tasks: [
-    { id: 't1', title: 'Send the revised proposal to Maya', project: 'Work rhythm', due: 'Today', time: '09:30', priority: 'high', done: false },
-    { id: 't2', title: 'Book a quiet place for Friday', project: 'Personal', due: 'Today', time: '11:00', priority: 'medium', done: false },
-    { id: 't3', title: 'Review the first three portfolio notes', project: 'Portfolio refresh', due: 'Today', time: '14:00', priority: 'medium', done: false },
-    { id: 't4', title: 'Walk around the block before dinner', project: 'Personal', due: 'Today', time: '18:30', priority: 'low', done: false },
-    { id: 't5', title: 'Outline next week’s priorities', project: 'Work rhythm', due: 'Tomorrow', priority: 'low', done: false },
-    { id: 't6', title: 'Choose two photos for the case study', project: 'Portfolio refresh', due: 'Friday', priority: 'medium', done: true },
-  ],
-  projects: [
-    { id: 'p1', name: 'Work rhythm', description: 'A clearer week with fewer loose ends.', color: '#e88870', goal: 'Protect two deep-work mornings' },
-    { id: 'p2', name: 'Portfolio refresh', description: 'A small, honest collection of recent work.', color: '#a9cbbd', goal: 'Publish the first draft' },
-    { id: 'p3', name: 'Home, gently', description: 'Make the home feel easy to return to.', color: '#d9ba83', goal: 'Finish the Sunday reset' },
-    { id: 'p4', name: 'Personal', description: 'The little things that keep the week kind.', color: '#b7afb9', goal: 'Leave room for real life' },
-  ],
-  captures: [
-    { id: 'c1', text: 'Remember to ask Jo about the intro when I send the proposal.', createdAt: 'Today, 08:42', converted: false },
-    { id: 'c2', text: 'I want to make more space for reading without making it another project.', createdAt: 'Yesterday, 20:16', converted: true },
-  ],
-  preferences: { dark: false, accent: '#e88870', memory: true, reminders: true, sectionOrder: ['briefing','whatnow','priorities','timeline','capture','quote'], fontStyle: 'modern', calendarConnected: 'none' },
-  waitingFor: []
+const defaultPreferences: Preferences = {
+  dark: false, accent: '#e88870', memory: true, reminders: true,
+  sectionOrder: ['briefing', 'whatnow', 'priorities', 'timeline', 'capture', 'quote'],
+  fontStyle: 'modern', calendarConnected: 'none',
 };
 
-function readState(): AppState {
+/** Read & backfill legacy localStorage state for one-time migration. */
+function readLegacyLocalStorage(): AppState | null {
   try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved) as AppState;
-      if (!parsed.preferences) parsed.preferences = seedState.preferences;
-      if (!parsed.preferences.sectionOrder) parsed.preferences.sectionOrder = seedState.preferences.sectionOrder;
-      if (!parsed.preferences.fontStyle) parsed.preferences.fontStyle = seedState.preferences.fontStyle;
-      if (!parsed.preferences.calendarConnected) parsed.preferences.calendarConnected = seedState.preferences.calendarConnected;
-      if (!parsed.waitingFor) parsed.waitingFor = [];
-      return parsed;
-    }
-  } catch { /* use the welcoming seed when storage is unavailable */ }
-  return seedState;
+    const saved = localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (!saved) return null;
+    const parsed = JSON.parse(saved) as AppState;
+    if (!parsed.preferences) parsed.preferences = defaultPreferences;
+    if (!parsed.preferences.sectionOrder) parsed.preferences.sectionOrder = defaultPreferences.sectionOrder;
+    if (!parsed.preferences.fontStyle) parsed.preferences.fontStyle = defaultPreferences.fontStyle;
+    if (!parsed.preferences.calendarConnected) parsed.preferences.calendarConnected = defaultPreferences.calendarConnected;
+    if (!parsed.waitingFor) parsed.waitingFor = [];
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/** Coerce the server AppState type into our local AppState type (they match structurally). */
+function toLocalState(s: ServerAppState): AppState {
+  return s as unknown as AppState;
 }
 
 function useAppState() {
-  const [state, setState] = useState<AppState>(readState);
+  const { data: serverState, isLoading: isServerLoading } = useGetAppState();
+  const { mutate: saveToServer } = useSaveAppState();
+
+  const [state, setState] = useState<AppState | null>(null);
   const [notice, setNotice] = useState('');
-  useEffect(() => { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }, [state]);
+  const initializedRef = useRef(false);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Once we get the server state, initialize local state (with optional migration)
   useEffect(() => {
+    if (isServerLoading || serverState === undefined || initializedRef.current) return;
+
+    const alreadyMigrated = localStorage.getItem(MIGRATION_FLAG_KEY);
+    if (!alreadyMigrated) {
+      // First visit: migrate any existing localStorage data
+      const legacyState = readLegacyLocalStorage();
+      localStorage.setItem(MIGRATION_FLAG_KEY, '1');
+      if (legacyState) {
+        // User had local data — persist it to server, use it as state
+        setState(legacyState);
+        saveToServer({ data: legacyState as unknown as ServerAppState });
+        initializedRef.current = true;
+        return;
+      }
+    }
+
+    // Normal path: use what the server returned
+    setState(toLocalState(serverState));
+    initializedRef.current = true;
+  }, [serverState, isServerLoading, saveToServer]);
+
+  // Debounced server save on every state change
+  useEffect(() => {
+    if (!state || !initializedRef.current) return;
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      saveToServer({ data: state as unknown as ServerAppState });
+    }, 600);
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    };
+  }, [state, saveToServer]);
+
+  // Apply preferences to document
+  useEffect(() => {
+    if (!state) return;
     document.documentElement.classList.toggle('dark', state.preferences.dark);
     document.documentElement.style.setProperty('--primary', hexToHsl(state.preferences.accent));
     if (state.preferences.fontStyle === 'classic') {
@@ -108,20 +149,61 @@ function useAppState() {
     } else {
       document.documentElement.style.setProperty('--app-font-sans', "'DM Sans', sans-serif");
     }
-  }, [state.preferences]);
+  }, [state?.preferences]);
+
   useEffect(() => {
     if (!notice) return;
     const timer = window.setTimeout(() => setNotice(''), 2500);
     return () => window.clearTimeout(timer);
   }, [notice]);
-  const update = (fn: (current: AppState) => AppState) => setState((current) => fn(current));
-  const toggleTask = (id: string) => update((s) => ({ ...s, tasks: s.tasks.map((t) => t.id === id ? { ...t, done: !t.done } : t) }));
-  const removeTask = (id: string) => update((s) => ({ ...s, tasks: s.tasks.filter((t) => t.id !== id) }));
-  const addTask = (task: Omit<Task, 'id' | 'done'>) => update((s) => ({ ...s, tasks: [{ ...task, id: `t${Date.now()}`, done: false }, ...s.tasks] }));
-  const editTask = (id: string, patch: Partial<Task>) => update((s) => ({ ...s, tasks: s.tasks.map((t) => t.id === id ? { ...t, ...patch } : t) }));
-  const addCapture = (text: string) => update((s) => ({ ...s, captures: [{ id: `c${Date.now()}`, text, createdAt: 'Just now', converted: false }, ...s.captures] }));
-  const reset = () => { setState(seedState); setNotice('Your sample day is back.'); };
-  return { state, update, toggleTask, removeTask, addTask, editTask, addCapture, reset, notice, setNotice };
+
+  const update = useCallback((fn: (current: AppState) => AppState) =>
+    setState((current) => current ? fn(current) : current), []);
+
+  const toggleTask = useCallback((id: string) =>
+    update((s) => ({ ...s, tasks: s.tasks.map((t) => t.id === id ? { ...t, done: !t.done } : t) })), [update]);
+
+  const removeTask = useCallback((id: string) =>
+    update((s) => ({ ...s, tasks: s.tasks.filter((t) => t.id !== id) })), [update]);
+
+  const addTask = useCallback((task: Omit<Task, 'id' | 'done'>) =>
+    update((s) => ({ ...s, tasks: [{ ...task, id: `t${Date.now()}`, done: false }, ...s.tasks] })), [update]);
+
+  const editTask = useCallback((id: string, patch: Partial<Task>) =>
+    update((s) => ({ ...s, tasks: s.tasks.map((t) => t.id === id ? { ...t, ...patch } : t) })), [update]);
+
+  const addCapture = useCallback((text: string) =>
+    update((s) => ({ ...s, captures: [{ id: `c${Date.now()}`, text, createdAt: 'Just now', converted: false }, ...s.captures] })), [update]);
+
+  const reset = useCallback(() => {
+    // Reset to seed state — server will re-seed on next GET since we send it explicitly
+    const seedState: AppState = {
+      tasks: [
+        { id: 't1', title: 'Send the revised proposal to Maya', project: 'Work rhythm', due: 'Today', time: '09:30', priority: 'high', done: false },
+        { id: 't2', title: 'Book a quiet place for Friday', project: 'Personal', due: 'Today', time: '11:00', priority: 'medium', done: false },
+        { id: 't3', title: 'Review the first three portfolio notes', project: 'Portfolio refresh', due: 'Today', time: '14:00', priority: 'medium', done: false },
+        { id: 't4', title: 'Walk around the block before dinner', project: 'Personal', due: 'Today', time: '18:30', priority: 'low', done: false },
+        { id: 't5', title: "Outline next week's priorities", project: 'Work rhythm', due: 'Tomorrow', priority: 'low', done: false },
+        { id: 't6', title: 'Choose two photos for the case study', project: 'Portfolio refresh', due: 'Friday', priority: 'medium', done: true },
+      ],
+      projects: [
+        { id: 'p1', name: 'Work rhythm', description: 'A clearer week with fewer loose ends.', color: '#e88870', goal: 'Protect two deep-work mornings' },
+        { id: 'p2', name: 'Portfolio refresh', description: 'A small, honest collection of recent work.', color: '#a9cbbd', goal: 'Publish the first draft' },
+        { id: 'p3', name: 'Home, gently', description: 'Make the home feel easy to return to.', color: '#d9ba83', goal: 'Finish the Sunday reset' },
+        { id: 'p4', name: 'Personal', description: 'The little things that keep the week kind.', color: '#b7afb9', goal: 'Leave room for real life' },
+      ],
+      captures: [
+        { id: 'c1', text: 'Remember to ask Jo about the intro when I send the proposal.', createdAt: 'Today, 08:42', converted: false },
+        { id: 'c2', text: 'I want to make more space for reading without making it another project.', createdAt: 'Yesterday, 20:16', converted: true },
+      ],
+      preferences: defaultPreferences,
+      waitingFor: [],
+    };
+    setState(seedState);
+    setNotice('Your sample day is back.');
+  }, []);
+
+  return { state, isLoading: isServerLoading || !state, update, toggleTask, removeTask, addTask, editTask, addCapture, reset, notice, setNotice };
 }
 
 function hexToHsl(hex: string) {
@@ -231,6 +313,7 @@ function Home({ app }: { app: ReturnType<typeof useAppState> }) {
   const { state, toggleTask, removeTask, update, setNotice } = app;
   const [overwhelmed, setOverwhelmed] = useState(false);
   const [captureText, setCaptureText] = useState('');
+  if (!state) return null;
   const remaining = state.tasks.filter((task) => !task.done && task.due === 'Today');
   const next = remaining[0];
   const completed = state.tasks.filter((task) => task.done).length;
@@ -247,11 +330,11 @@ function Home({ app }: { app: ReturnType<typeof useAppState> }) {
     setNotice('Held onto that thought.');
   };
 
-  if (overwhelmed) return <div className="page-wrap"><PageHeader eyebrow="A softer view" title={<>One thing, <span className="serif">Satin.</span></>} subtitle="You don't have to handle everything. Just this one." action={<button className="button button-secondary" onClick={() => setOverwhelmed(false)} data-testid="button-return-normal"><ArrowLeft size={15} /> Return to my day</button>} /><div className="card overwhelm-card" style={{ maxWidth: 650, minHeight: 360, margin: '10vh auto 0' }}><div><div className="eyebrow">Your next gentle step</div><h2>{next ? next.title : 'The day is already held.'}</h2><p>{next ? "That's it. The rest is background noise for now." : "You have moved through today’s list. A pause is a perfectly good next step."}</p></div><div><div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>{next && <button className="button button-primary" onClick={() => { toggleTask(next.id); setNotice('That is enough for now.'); }} data-testid="button-complete-next"><Check size={15} /> Mark it complete</button>}<button className="button" style={{ background: 'hsl(var(--sidebar-foreground) / .12)', color: 'inherit' }} onClick={() => setOverwhelmed(false)} data-testid="button-see-day">See my full day</button></div><div style={{ marginTop: 40, borderTop: '1px solid hsl(var(--border))', paddingTop: 20 }}><p style={{ fontStyle: 'italic', color: 'hsl(var(--muted-foreground))', fontSize: 13 }}>"{QUOTES[Math.floor(Math.random() * QUOTES.length)]}"</p></div></div></div></div>;
+  if (overwhelmed) return <div className="page-wrap"><PageHeader eyebrow="A softer view" title={<>One thing, <span className="serif">Satin.</span></>} subtitle="You don't have to handle everything. Just this one." action={<button className="button button-secondary" onClick={() => setOverwhelmed(false)} data-testid="button-return-normal"><ArrowLeft size={15} /> Return to my day</button>} /><div className="card overwhelm-card" style={{ maxWidth: 650, minHeight: 360, margin: '10vh auto 0' }}><div><div className="eyebrow">Your next gentle step</div><h2>{next ? next.title : 'The day is already held.'}</h2><p>{next ? "That's it. The rest is background noise for now." : "You have moved through today's list. A pause is a perfectly good next step."}</p></div><div><div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>{next && <button className="button button-primary" onClick={() => { toggleTask(next.id); setNotice('That is enough for now.'); }} data-testid="button-complete-next"><Check size={15} /> Mark it complete</button>}<button className="button" style={{ background: 'hsl(var(--sidebar-foreground) / .12)', color: 'inherit' }} onClick={() => setOverwhelmed(false)} data-testid="button-see-day">See my full day</button></div><div style={{ marginTop: 40, borderTop: '1px solid hsl(var(--border))', paddingTop: 20 }}><p style={{ fontStyle: 'italic', color: 'hsl(var(--muted-foreground))', fontSize: 13 }}>"{QUOTES[Math.floor(Math.random() * QUOTES.length)]}"</p></div></div></div></div>;
 
   const renderSection = (name: string) => {
     if (name === 'briefing') return (
-      <section key="briefing" className="card briefing" data-testid="card-ai-briefing"><div className="briefing-top"><div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><span className="status-dot" /><span className="eyebrow" style={{ color: 'hsl(var(--muted-foreground))' }}>Your morning briefing</span></div><Sparkles size={18} color="hsl(var(--primary))" /></div><h2>You have a clear first move, and a little room after it.</h2><p>Start with Maya’s proposal while your thinking is fresh. The booking can follow. I’ve kept the afternoon lighter so the portfolio work does not become another mountain.</p><div className="briefing-actions"><Link href="/plan" className="button button-primary" data-testid="link-open-plan"><Calendar size={15} /> Open today’s plan</Link><Link href="/capture" className="button button-ghost" data-testid="link-open-capture"><Plus size={15} /> Add a thought</Link></div></section>
+      <section key="briefing" className="card briefing" data-testid="card-ai-briefing"><div className="briefing-top"><div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><span className="status-dot" /><span className="eyebrow" style={{ color: 'hsl(var(--muted-foreground))' }}>Your morning briefing</span></div><Sparkles size={18} color="hsl(var(--primary))" /></div><h2>You have a clear first move, and a little room after it.</h2><p>Start with Maya's proposal while your thinking is fresh. The booking can follow. I've kept the afternoon lighter so the portfolio work does not become another mountain.</p><div className="briefing-actions"><Link href="/plan" className="button button-primary" data-testid="link-open-plan"><Calendar size={15} /> Open today's plan</Link><Link href="/capture" className="button button-ghost" data-testid="link-open-capture"><Plus size={15} /> Add a thought</Link></div></section>
     );
     if (name === 'whatnow') return <WhatNowSection key="whatnow" remaining={remaining} hour={hour} />;
     if (name === 'priorities') {
@@ -280,13 +363,13 @@ function Home({ app }: { app: ReturnType<typeof useAppState> }) {
   const rightNames = state.preferences.sectionOrder.filter(n => ['timeline', 'quote'].includes(n));
 
   return <div className="page-wrap">
-    <PageHeader eyebrow={`Thursday, 24 October`} title={<>{greeting}, <span className="serif">Satin.</span></>} subtitle={`${remaining.length} things worth your attention today. We can make room for them.`} action={<button className="button button-secondary" onClick={() => setOverwhelmed(true)} data-testid="button-overwhelmed"><CircleHelp size={15} /> I’m overwhelmed</button>} />
+    <PageHeader eyebrow={`Thursday, 24 October`} title={<>{greeting}, <span className="serif">Satin.</span></>} subtitle={`${remaining.length} things worth your attention today. We can make room for them.`} action={<button className="button button-secondary" onClick={() => setOverwhelmed(true)} data-testid="button-overwhelmed"><CircleHelp size={15} /> I'm overwhelmed</button>} />
     <div className="grid-home">
       <div className="stack">
         {leftNames.map(renderSection)}
       </div>
       <div className="stack">
-        <section className="card overwhelm-card"><div><div className="eyebrow">When the list feels loud</div><h2>Let’s make it smaller.</h2><p>There is no prize for carrying every open loop at the same time.</p><div className="next-step"><span>Try this next</span><strong>{next?.title || 'Take a real pause'}</strong></div></div><button className="button" style={{ background: 'hsl(var(--sidebar-foreground) / .12)', color: 'inherit', width: 'fit-content' }} onClick={() => setOverwhelmed(true)} data-testid="button-simplify-day"><WandSparkles size={15} /> Simplify my day</button></section>
+        <section className="card overwhelm-card"><div><div className="eyebrow">When the list feels loud</div><h2>Let's make it smaller.</h2><p>There is no prize for carrying every open loop at the same time.</p><div className="next-step"><span>Try this next</span><strong>{next?.title || 'Take a real pause'}</strong></div></div><button className="button" style={{ background: 'hsl(var(--sidebar-foreground) / .12)', color: 'inherit', width: 'fit-content' }} onClick={() => setOverwhelmed(true)} data-testid="button-simplify-day"><WandSparkles size={15} /> Simplify my day</button></section>
         {rightNames.map(renderSection)}
       </div>
     </div>
@@ -352,12 +435,14 @@ function Plan({ app }: { app: ReturnType<typeof useAppState> }) {
 
   // Auto-mark calendar as connected when the API confirms it
   useEffect(() => {
-    if (calendarStatus && (calendarStatus as { connected: boolean }).connected && state.preferences.calendarConnected === 'none') {
+    if (calendarStatus && (calendarStatus as { connected: boolean }).connected && state?.preferences.calendarConnected === 'none') {
       update(s => ({ ...s, preferences: { ...s.preferences, calendarConnected: 'google' as const } }));
     }
   }, [calendarStatus]); // eslint-disable-line react-hooks/exhaustive-deps
   const [waitingName, setWaitingName] = useState('');
   const [waitingItem, setWaitingItem] = useState('');
+
+  if (!state) return null;
 
   const visible = state.tasks.filter((task) => (filter === 'All' || task.due === filter || (filter === 'Open' && !task.done) || (filter === 'Done' && task.done)) && task.title.toLowerCase().includes(query.toLowerCase()));
   
@@ -382,7 +467,7 @@ function Plan({ app }: { app: ReturnType<typeof useAppState> }) {
   };
 
   return <div className="page-wrap"><PageHeader eyebrow="The week, in view" title={<>Make a plan that <span className="serif">breathes.</span></>} subtitle="A flexible shape for the things you want to move forward." action={<button className="button button-primary" onClick={() => setModal({ open: true })} data-testid="button-add-task"><Plus size={16} /> Add task</button>} /><div className="plan-toolbar"><div className="search-field"><Search size={15} /><input className="field" type="search" placeholder="Find a task…" value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Search tasks" data-testid="input-search-tasks" /></div><select className="field select-field" value={filter} onChange={(event) => setFilter(event.target.value)} aria-label="Filter tasks" data-testid="select-filter-tasks"><option>All</option><option>Open</option><option>Done</option><option>Today</option><option>Tomorrow</option></select><button className="button button-secondary" onClick={() => setModal({ open: true })} data-testid="button-add-task-toolbar"><Plus size={15} /> New task</button></div><div className="plan-grid"><section><div className="section-title"><h2>{filter === 'All' ? 'All open loops' : `${filter} tasks`}</h2><span>{visible.length} {visible.length === 1 ? 'task' : 'tasks'}</span></div><div className="task-list">{visible.map((task) => <TaskRow key={task.id} task={task} onToggle={() => { toggleTask(task.id); setNotice(task.done ? 'Back on the list.' : 'Nice. One less thing to carry.'); }} onDelete={() => { removeTask(task.id); setNotice('Task removed.'); }} onEdit={() => setModal({ open: true, task })} onReschedule={() => { update((s) => ({ ...s, tasks: s.tasks.map((t) => t.id === task.id ? { ...t, due: t.due === 'Today' ? 'Tomorrow' : 'Today' } : t) })); setNotice(task.due === 'Today' ? 'Moved to tomorrow.' : 'Brought back to today.'); }} />)}{visible.length === 0 && <div className="empty-state"><Search size={22} /><div>No tasks match that view.</div><button className="button button-ghost" onClick={() => { setQuery(''); setFilter('All'); }} data-testid="button-clear-task-filter">Clear filters</button></div>}</div>
-      <div style={{ marginTop: 40 }}><div className="section-title"><h2>Waiting For</h2><span>Keep track of dependencies</span></div><div className="task-list">{(state.waitingFor || []).map(w => <div key={w.id} className="task-row" style={{ gridTemplateColumns: '1fr auto', padding: '12px 16px' }}><div><strong style={{ fontSize: 13, display: 'block' }}>{w.person}</strong><span style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', display: 'block', marginTop: 2 }}>{w.item}</span></div><button className="icon-button" onClick={() => removeWaiting(w.id)}><Check size={16} /></button></div>)}<div className="task-row" style={{ gridTemplateColumns: '1fr 1.5fr auto', padding: '8px 12px', gap: 8, background: 'transparent' }}><input className="field" placeholder="Who?" value={waitingName} onChange={e => setWaitingName(e.target.value)} /><input className="field" placeholder="Waiting for what?" value={waitingItem} onChange={e => setWaitingItem(e.target.value)} onKeyDown={e => e.key === 'Enter' && addWaiting()} /><button className="button button-primary" style={{ minHeight: 36, padding: '0 12px' }} onClick={addWaiting}><Plus size={16} /></button></div></div></div></section><aside className="stack"><section className="card calendar-card"><div className="calendar-head"><button className="icon-button" onClick={() => setWeekOffset(o => o - 1)} aria-label="Previous week" data-testid="button-previous-week"><ArrowLeft size={16} /></button><strong>{weekMonthLabel}</strong><button className="icon-button" onClick={() => setWeekOffset(o => o + 1)} aria-label="Next week" data-testid="button-next-week"><ArrowRight size={16} /></button></div><div className="week-grid">{weekDays.map((day, index) => <div className={`day-cell ${day.getTime() === todayMidnight.getTime() ? 'today' : ''}`} key={index}><span>{['M','T','W','T','F','S','S'][index]}</span><b>{day.getDate()}</b></div>)}</div>{calEventsLoading && <div style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', padding: '8px 0' }}>Loading calendar…</div>}{!calEventsLoading && calendarEvents && (calendarEvents as Array<{ id: string; title: string; start: string; end: string; allDay: boolean }>).length === 0 && <div style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', padding: '8px 0' }}>No events today.</div>}{!calEventsLoading && calendarEvents && (calendarEvents as Array<{ id: string; title: string; start: string; end: string; allDay: boolean }>).map((ev, i) => { const startTime = ev.allDay ? 'All day' : new Date(ev.start).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); const endTime = ev.allDay ? '' : new Date(ev.end).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); return <div className="calendar-event" key={ev.id} style={{ borderLeftColor: i % 2 === 0 ? 'hsl(var(--primary))' : 'hsl(var(--accent-foreground))' }}><strong>{ev.title}</strong><span>{eventsDateLabel} · {startTime}{endTime && !ev.allDay ? ` — ${endTime}` : ''}</span></div>; })}{!calEventsLoading && !calendarEvents && <div style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', padding: '8px 0' }}>Could not load calendar events.</div>}</section><section className="card calendar-card"><div className="section-title"><h2>Connected services</h2></div>{state.preferences.calendarConnected === 'none' ? (<div style={{ display: 'flex', gap: 10, flexDirection: 'column' }}><button className="button button-ghost" style={{ justifyContent: 'flex-start', border: '1px solid hsl(var(--border))' }} onClick={() => setNotice('Calendar connection requires authorization. Use the Me tab to connect after authorizing.')}><Calendar size={16} /> Google Calendar</button><button className="button button-ghost" style={{ justifyContent: 'flex-start', border: '1px solid hsl(var(--border))' }} onClick={() => setNotice('Calendar connection requires authorization. Use the Me tab to connect after authorizing.')}><Calendar size={16} /> Microsoft Outlook</button></div>) : (<div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 12, background: 'hsl(var(--secondary)/0.5)', borderRadius: 12 }}><div style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981' }} /><span style={{ fontSize: 13, fontWeight: 500 }}>Calendar connected</span><span style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', marginLeft: 'auto', textTransform: 'capitalize' }}>{state.preferences.calendarConnected}</span></div>)}</section><section className="soft-card" style={{ padding: 19 }}><div className="section-title"><h2>Today’s capacity</h2><Gauge size={17} color="hsl(var(--primary))" /></div><div className="progress-bar"><div className="progress-fill" style={{ width: `${Math.min(100, (state.tasks.filter((t) => t.done).length / Math.max(1, state.tasks.length)) * 100)}%` }} /></div><p style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', lineHeight: 1.5, marginBottom: 0 }}>Leave a little margin. A plan is useful when life can still happen inside it.</p></section></aside></div>{modal.open && <TaskModal initial={modal.task} onClose={() => setModal({ open: false })} onSave={saveTask} />}</div>;
+      <div style={{ marginTop: 40 }}><div className="section-title"><h2>Waiting For</h2><span>Keep track of dependencies</span></div><div className="task-list">{(state.waitingFor || []).map(w => <div key={w.id} className="task-row" style={{ gridTemplateColumns: '1fr auto', padding: '12px 16px' }}><div><strong style={{ fontSize: 13, display: 'block' }}>{w.person}</strong><span style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', display: 'block', marginTop: 2 }}>{w.item}</span></div><button className="icon-button" onClick={() => removeWaiting(w.id)}><Check size={16} /></button></div>)}<div className="task-row" style={{ gridTemplateColumns: '1fr 1.5fr auto', padding: '8px 12px', gap: 8, background: 'transparent' }}><input className="field" placeholder="Who?" value={waitingName} onChange={e => setWaitingName(e.target.value)} /><input className="field" placeholder="Waiting for what?" value={waitingItem} onChange={e => setWaitingItem(e.target.value)} onKeyDown={e => e.key === 'Enter' && addWaiting()} /><button className="button button-primary" style={{ minHeight: 36, padding: '0 12px' }} onClick={addWaiting}><Plus size={16} /></button></div></div></div></section><aside className="stack"><section className="card calendar-card"><div className="calendar-head"><button className="icon-button" onClick={() => setWeekOffset(o => o - 1)} aria-label="Previous week" data-testid="button-previous-week"><ArrowLeft size={16} /></button><strong>{weekMonthLabel}</strong><button className="icon-button" onClick={() => setWeekOffset(o => o + 1)} aria-label="Next week" data-testid="button-next-week"><ArrowRight size={16} /></button></div><div className="week-grid">{weekDays.map((day, index) => <div className={`day-cell ${day.getTime() === todayMidnight.getTime() ? 'today' : ''}`} key={index}><span>{['M','T','W','T','F','S','S'][index]}</span><b>{day.getDate()}</b></div>)}</div>{calEventsLoading && <div style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', padding: '8px 0' }}>Loading calendar…</div>}{!calEventsLoading && calendarEvents && (calendarEvents as Array<{ id: string; title: string; start: string; end: string; allDay: boolean }>).length === 0 && <div style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', padding: '8px 0' }}>No events today.</div>}{!calEventsLoading && calendarEvents && (calendarEvents as Array<{ id: string; title: string; start: string; end: string; allDay: boolean }>).map((ev, i) => { const startTime = ev.allDay ? 'All day' : new Date(ev.start).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); const endTime = ev.allDay ? '' : new Date(ev.end).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); return <div className="calendar-event" key={ev.id} style={{ borderLeftColor: i % 2 === 0 ? 'hsl(var(--primary))' : 'hsl(var(--accent-foreground))' }}><strong>{ev.title}</strong><span>{eventsDateLabel} · {startTime}{endTime && !ev.allDay ? ` — ${endTime}` : ''}</span></div>; })}{!calEventsLoading && !calendarEvents && <div style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', padding: '8px 0' }}>Could not load calendar events.</div>}</section><section className="card calendar-card"><div className="section-title"><h2>Connected services</h2></div>{state.preferences.calendarConnected === 'none' ? (<div style={{ display: 'flex', gap: 10, flexDirection: 'column' }}><button className="button button-ghost" style={{ justifyContent: 'flex-start', border: '1px solid hsl(var(--border))' }} onClick={() => setNotice('Calendar connection requires authorization. Use the Me tab to connect after authorizing.')}><Calendar size={16} /> Google Calendar</button><button className="button button-ghost" style={{ justifyContent: 'flex-start', border: '1px solid hsl(var(--border))' }} onClick={() => setNotice('Calendar connection requires authorization. Use the Me tab to connect after authorizing.')}><Calendar size={16} /> Microsoft Outlook</button></div>) : (<div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 12, background: 'hsl(var(--secondary)/0.5)', borderRadius: 12 }}><div style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981' }} /><span style={{ fontSize: 13, fontWeight: 500 }}>Calendar connected</span><span style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', marginLeft: 'auto', textTransform: 'capitalize' }}>{state.preferences.calendarConnected}</span></div>)}</section><section className="soft-card" style={{ padding: 19 }}><div className="section-title"><h2>Today's capacity</h2><Gauge size={17} color="hsl(var(--primary))" /></div><div className="progress-bar"><div className="progress-fill" style={{ width: `${Math.min(100, (state.tasks.filter((t) => t.done).length / Math.max(1, state.tasks.length)) * 100)}%` }} /></div><p style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', lineHeight: 1.5, marginBottom: 0 }}>Leave a little margin. A plan is useful when life can still happen inside it.</p></section></aside></div>{modal.open && <TaskModal initial={modal.task} onClose={() => setModal({ open: false })} onSave={saveTask} />}</div>;
 }
 
 function Projects({ app }: { app: ReturnType<typeof useAppState> }) {
@@ -390,6 +475,7 @@ function Projects({ app }: { app: ReturnType<typeof useAppState> }) {
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  if (!state) return null;
   return <div className="page-wrap"><PageHeader eyebrow="The bigger picture" title={<>Things worth <span className="serif">tending.</span></>} subtitle="Projects are containers, not obligations. Give each one a little shape." action={<button className="button button-primary" onClick={() => setAdding(true)} data-testid="button-add-project"><Plus size={16} /> New project</button>} /><button className="button button-primary mobile-only" style={{ marginBottom: 18 }} onClick={() => setAdding(true)} data-testid="button-add-project-mobile"><Plus size={16} /> New project</button>{adding && <div className="card" style={{ padding: 20, marginBottom: 20 }}><form style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr auto', gap: 10, alignItems: 'end' }} onSubmit={(event) => { event.preventDefault(); if (!name.trim()) return; update((s) => ({ ...s, projects: [{ id: `p${Date.now()}`, name: name.trim(), description: description || 'A project with room to grow.', color: '#a9cbbd', goal: 'Choose the next small step' }, ...s.projects] })); setName(''); setDescription(''); setAdding(false); setNotice('Project created.'); }}><div><label className="field-label" htmlFor="project-name">Project name</label><input autoFocus className="field" id="project-name" value={name} onChange={(event) => setName(event.target.value)} data-testid="input-project-name" /></div><div><label className="field-label" htmlFor="project-description">What is it for?</label><input className="field" id="project-description" value={description} onChange={(event) => setDescription(event.target.value)} data-testid="input-project-description" /></div><div style={{ display: 'flex', gap: 6 }}><button className="button button-primary" type="submit" data-testid="button-save-project">Create</button><button type="button" className="button button-ghost" onClick={() => setAdding(false)} data-testid="button-cancel-project">Cancel</button></div></form></div>}<div className="project-grid">{state.projects.map((project) => { const related = state.tasks.filter((task) => task.project === project.name); const done = related.filter((task) => task.done).length; const progress = related.length ? Math.round((done / related.length) * 100) : 0; return <article className="card project-card" key={project.id} data-testid={`card-project-${project.id}`}><div className="project-card-head"><div className="project-icon" style={{ background: project.color }}><FolderKanban size={17} /></div><button className="icon-button" onClick={() => { update((s) => ({ ...s, projects: s.projects.filter((p) => p.id !== project.id) })); setNotice('Project archived.'); }} aria-label={`Archive ${project.name}`} data-testid={`button-archive-project-${project.id}`}><Archive size={15} /></button></div><h2>{project.name}</h2><p>{project.description}</p><div className="progress-bar"><div className="progress-fill" style={{ width: `${progress}%`, background: project.color }} /></div><div className="project-foot"><span>{progress}% in motion</span><span>{related.length ? `${done} of ${related.length} done` : 'No tasks yet'}</span></div><div className="divider" style={{ margin: '19px 0 13px' }} /><div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}><TargetIcon /><span style={{ fontSize: 11, lineHeight: 1.4, color: 'hsl(var(--muted-foreground))' }}>{project.goal}</span></div></article>; })}</div>{state.projects.length === 0 && <div className="empty-state" style={{ marginTop: 20 }}><FolderKanban size={22} /><div>Your project shelf is clear.</div><button className="button button-primary" onClick={() => setAdding(true)} data-testid="button-create-first-project">Create a project</button></div>}</div>;
 }
 
@@ -397,10 +483,10 @@ function TargetIcon() { return <div style={{ width: 20, height: 20, borderRadius
 
 function assistantReply(text: string) {
   const lower = text.toLowerCase();
-  if (lower.includes('meeting') || lower.includes('call')) return 'That sounds like a commitment with a shape. I would put it on the plan first, then decide what preparation is actually needed.';
-  if (lower.includes('buy') || lower.includes('book') || lower.includes('email') || lower.includes('send')) return 'This has a clear action inside it. I found the smallest useful version: name the thing, give it a home, and let the rest wait.';
-  if (lower.includes('tired') || lower.includes('overwhelm') || lower.includes('too much')) return 'You do not need to organize this feeling right now. Let’s choose one low-lift action and leave the rest in the safe place.';
-  return 'I’m holding onto this with you. It does not need to become a project before it becomes clearer.';
+  if (lower.includes('meeting') || lower.includes('call')) return "That sounds like a commitment with a shape. I would put it on the plan first, then decide what preparation is actually needed.";
+  if (lower.includes('buy') || lower.includes('book') || lower.includes('email') || lower.includes('send')) return "This has a clear action inside it. I found the smallest useful version: name the thing, give it a home, and let the rest wait.";
+  if (lower.includes('tired') || lower.includes('overwhelm') || lower.includes('too much')) return "You do not need to organize this feeling right now. Let\u2019s choose one low-lift action and leave the rest in the safe place.";
+  return "I\u2019m holding onto this with you. It does not need to become a project before it becomes clearer.";
 }
 function breakdownText(text: string) {
   const cleaned = text.replace(/\s+/g, ' ').trim();
@@ -424,6 +510,8 @@ function CapturePage({ app }: { app: ReturnType<typeof useAppState> }) {
     }, 200);
     return () => clearTimeout(timer);
   }, []);
+
+  if (!state) return null;
 
   const save = () => { if (!text.trim()) return; addCapture(text.trim()); setReply(assistantReply(text)); setRemovedParts([]); setNotice('Thought captured.'); };
   const convert = () => { parts.forEach((part) => addTask({ title: part, project: 'Personal', due: 'Today', priority: 'medium' })); update((s) => ({ ...s, captures: s.captures.map((capture, index) => index === 0 ? { ...capture, converted: true } : capture) })); setNotice(`${parts.length} small steps added to your plan.`); };
@@ -462,19 +550,21 @@ function CapturePage({ app }: { app: ReturnType<typeof useAppState> }) {
     }
   };
 
-  return <div className="page-wrap"><div className="capture-page"><PageHeader eyebrow="No sorting required" title={<>Say it before you <span className="serif">lose it.</span></>} subtitle="A private landing place for the thought circling your head." /><section className="card capture-box"><textarea ref={textAreaRef} className="capture-input" placeholder="What’s taking up a little too much room in your mind?" value={text} onChange={(event) => { setText(event.target.value); setReply(''); setRemovedParts([]); }} aria-label="Brain dump" data-testid="textarea-brain-dump" /><div className="capture-footer"><div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginTop: 14, flex: 1, padding: '20px 0' }}><button className={`voice-button-large ${listening ? 'listening' : ''}`} onClick={toggleListen} aria-label={listening ? 'Stop voice capture' : 'Start voice-style capture'} data-testid="button-voice-capture"><Mic size={32} /></button><span style={{ fontSize: 13, fontWeight: 500, color: 'hsl(var(--muted-foreground))', marginTop: 16 }}>{listening ? "Listening…" : "Tap to speak"}</span></div></div><div style={{ display: 'flex', justifyContent: 'flex-end', borderTop: '1px solid hsl(var(--border))', paddingTop: 16, marginTop: 10 }}><button className="button button-primary" onClick={save} disabled={!text.trim()} data-testid="button-capture-thought"><Sparkles size={15} /> Make sense of this</button></div></section>{reply && <div className="assistant-note" data-testid="text-assistant-response"><div className="assistant-symbol"><Sparkles size={14} /></div><p>{reply}<br /><span style={{ display: 'block', marginTop: 6, color: 'hsl(var(--muted-foreground))', fontSize: 11 }}>This is a small built-in reflection based on your words, not a connected external AI service.</span></p></div>}{reply && parts.length > 0 && <section className="card breakdown">{parts.length > 1 ? <h2 style={{ fontSize: 16, marginBottom: 16 }}>Want me to turn this into a realistic plan?</h2> : <div className="section-title"><h2>Possible small steps</h2><span>Nothing is committed yet</span></div>}{parts.map((part, index) => <div className="breakdown-row" key={`${part}-${index}`}><span className="priority-dot" /><span style={{ flex: 1 }}>{part}</span><button className="icon-button" onClick={() => setRemovedParts((current) => [...current, part])} aria-label={`Remove suggested step ${index + 1}`} data-testid={`button-remove-breakdown-${index}`}><X size={14} /></button></div>)}<div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14 }}><button className="button button-secondary" onClick={convert} data-testid="button-add-breakdown-to-plan"><ListChecks size={15} /> Add these to my plan</button></div></section>}<section style={{ marginTop: 35 }}><div className="section-title"><h2>Recent captures</h2><span>Only you can see these</span></div><div className="task-list">{state.captures.map((capture) => <div className="task-row" key={capture.id} data-testid={`row-capture-${capture.id}`}><div style={{ width: 22, height: 22, borderRadius: 7, background: 'hsl(var(--secondary))', display: 'grid', placeItems: 'center', color: 'hsl(var(--secondary-foreground))' }}><Brain size={13} /></div><div><div className="task-name" style={{ fontWeight: 500 }}>{capture.text}</div><div className="task-meta"><span>{capture.createdAt}</span>{capture.converted && <span className="task-tag">Added to plan</span>}</div></div><button className="icon-button" onClick={() => { update((s) => ({ ...s, captures: s.captures.filter((item) => item.id !== capture.id) })); setNotice('Capture deleted.'); }} aria-label="Delete capture" data-testid={`button-delete-capture-${capture.id}`}><Trash2 size={15} /></button></div>)}</div></section></div></div>;
+  return <div className="page-wrap"><div className="capture-page"><PageHeader eyebrow="No sorting required" title={<>Say it before you <span className="serif">lose it.</span></>} subtitle="A private landing place for the thought circling your head." /><section className="card capture-box"><textarea ref={textAreaRef} className="capture-input" placeholder="What's taking up a little too much room in your mind?" value={text} onChange={(event) => { setText(event.target.value); setReply(''); setRemovedParts([]); }} aria-label="Brain dump" data-testid="textarea-brain-dump" /><div className="capture-footer"><div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginTop: 14, flex: 1, padding: '20px 0' }}><button className={`voice-button-large ${listening ? 'listening' : ''}`} onClick={toggleListen} aria-label={listening ? 'Stop voice capture' : 'Start voice-style capture'} data-testid="button-voice-capture"><Mic size={32} /></button><span style={{ fontSize: 13, fontWeight: 500, color: 'hsl(var(--muted-foreground))', marginTop: 16 }}>{listening ? "Listening…" : "Tap to speak"}</span></div></div><div style={{ display: 'flex', justifyContent: 'flex-end', borderTop: '1px solid hsl(var(--border))', paddingTop: 16, marginTop: 10 }}><button className="button button-primary" onClick={save} disabled={!text.trim()} data-testid="button-capture-thought"><Sparkles size={15} /> Make sense of this</button></div></section>{reply && <div className="assistant-note" data-testid="text-assistant-response"><div className="assistant-symbol"><Sparkles size={14} /></div><p>{reply}<br /><span style={{ display: 'block', marginTop: 6, color: 'hsl(var(--muted-foreground))', fontSize: 11 }}>This is a small built-in reflection based on your words, not a connected external AI service.</span></p></div>}{reply && parts.length > 0 && <section className="card breakdown">{parts.length > 1 ? <h2 style={{ fontSize: 16, marginBottom: 16 }}>Want me to turn this into a realistic plan?</h2> : <div className="section-title"><h2>Possible small steps</h2><span>Nothing is committed yet</span></div>}{parts.map((part, index) => <div className="breakdown-row" key={`${part}-${index}`}><span className="priority-dot" /><span style={{ flex: 1 }}>{part}</span><button className="icon-button" onClick={() => setRemovedParts((current) => [...current, part])} aria-label={`Remove suggested step ${index + 1}`} data-testid={`button-remove-breakdown-${index}`}><X size={14} /></button></div>)}<div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14 }}><button className="button button-secondary" onClick={convert} data-testid="button-add-breakdown-to-plan"><ListChecks size={15} /> Add these to my plan</button></div></section>}<section style={{ marginTop: 35 }}><div className="section-title"><h2>Recent captures</h2><span>Only you can see these</span></div><div className="task-list">{state.captures.map((capture) => <div className="task-row" key={capture.id} data-testid={`row-capture-${capture.id}`}><div style={{ width: 22, height: 22, borderRadius: 7, background: 'hsl(var(--secondary))', display: 'grid', placeItems: 'center', color: 'hsl(var(--secondary-foreground))' }}><Brain size={13} /></div><div><div className="task-name" style={{ fontWeight: 500 }}>{capture.text}</div><div className="task-meta"><span>{capture.createdAt}</span>{capture.converted && <span className="task-tag">Added to plan</span>}</div></div><button className="icon-button" onClick={() => { update((s) => ({ ...s, captures: s.captures.filter((item) => item.id !== capture.id) })); setNotice('Capture deleted.'); }} aria-label="Delete capture" data-testid={`button-delete-capture-${capture.id}`}><Trash2 size={15} /></button></div>)}</div></section></div></div>;
 }
 
 function Me({ app }: { app: ReturnType<typeof useAppState> }) {
   const { state, update, reset, setNotice } = app;
   const accents = [{ name: 'Clay', value: '#e88870' }, { name: 'Olive', value: '#9fbfae' }, { name: 'Ochre', value: '#c49b59' }, { name: 'Berry', value: '#b9798c' }, { name: 'Rose', value: '#c47d8a' }, { name: 'Slate', value: '#7b9eb5' }, { name: 'Dusk', value: '#9b8bbf' }];
   
+  if (!state) return null;
+
   const ALL_SECTIONS = ['briefing', 'whatnow', 'priorities', 'timeline', 'capture', 'quote'];
   const activeSections = state.preferences.sectionOrder || ALL_SECTIONS;
   const inactiveSections = ALL_SECTIONS.filter(s => !activeSections.includes(s));
   const sectionLabels: Record<string, string> = { briefing: 'Morning Briefing', whatnow: 'What should I do right now?', priorities: 'Worth your attention', timeline: 'Your shape of today', capture: 'Capture box', quote: 'Daily Quote' };
 
-  return <div className="page-wrap"><PageHeader eyebrow="The way it feels" title={<>Make it <span className="serif">yours.</span></>} subtitle="A few gentle controls for how My Day holds your life." /><div className="settings-grid"><div className="stack"><section className="card settings-card"><h2>Appearance</h2><p>Choose colors and fonts that feel right.</p><div className="setting-row"><div><strong>Color theme</strong><span>Light or dark mode</span></div><button className={`switch ${state.preferences.dark ? 'on' : ''}`} onClick={() => update((s) => ({ ...s, preferences: { ...s.preferences, dark: !s.preferences.dark } }))} aria-label="Toggle dark mode" data-testid="switch-dark-mode" /></div><div className="setting-row"><div><strong>App Font</strong><span>Personalize your reading experience</span></div><select className="field" style={{ width: 'auto', minWidth: 120, height: 44, padding: '0 12px' }} value={state.preferences.fontStyle || 'modern'} onChange={e => update(s => ({ ...s, preferences: { ...s.preferences, fontStyle: e.target.value as any } }))}><option value="modern">Modern (DM Sans)</option><option value="classic">Classic (Lora)</option><option value="rounded">Rounded (Nunito)</option></select></div><div className="setting-row" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 12 }}><div><strong>Accent color</strong><span>Used for highlights and active states</span></div><div className="swatches" style={{ flexWrap: 'wrap' }} role="radiogroup" aria-label="Accent color">{accents.map((accent) => <button key={accent.value} className={`swatch ${state.preferences.accent === accent.value ? 'selected' : ''}`} style={{ background: accent.value }} onClick={() => { update((s) => ({ ...s, preferences: { ...s.preferences, accent: accent.value } })); setNotice(`${accent.name} is a good choice.`); }} aria-label={`Use ${accent.name} accent`} data-testid={`button-accent-${accent.name.toLowerCase()}`} />)}</div></div></section><section className="card settings-card"><h2>Customize Today</h2><p>Reorder or hide sections on your Today view.</p><div className="stack" style={{ gap: 0, marginTop: 12 }}>{activeSections.map((s, idx) => (<div key={s} className="setting-row" style={{ padding: '10px 0', borderBottom: '1px solid hsl(var(--border))', borderTop: 'none' }}><div style={{ display: 'flex', alignItems: 'center', gap: 12 }}><button className="icon-button" style={{ width: 32, height: 32, minWidth: 32, minHeight: 32 }} onClick={() => { update(st => ({ ...st, preferences: { ...st.preferences, sectionOrder: st.preferences.sectionOrder.filter(x => x !== s) }})); }}><Check size={16} color="hsl(var(--primary))" /></button><strong style={{ fontSize: 13 }}>{sectionLabels[s] || s}</strong></div><div style={{ display: 'flex', gap: 4 }}><button className="icon-button" style={{ width: 32, height: 32, minWidth: 32, minHeight: 32 }} disabled={idx === 0} onClick={() => { const arr = [...state.preferences.sectionOrder]; [arr[idx], arr[idx - 1]] = [arr[idx - 1], arr[idx]]; update(st => ({ ...st, preferences: { ...st.preferences, sectionOrder: arr }})); }}><ChevronUp size={16} /></button><button className="icon-button" style={{ width: 32, height: 32, minWidth: 32, minHeight: 32 }} disabled={idx === activeSections.length - 1} onClick={() => { const arr = [...state.preferences.sectionOrder]; [arr[idx], arr[idx + 1]] = [arr[idx + 1], arr[idx]]; update(st => ({ ...st, preferences: { ...st.preferences, sectionOrder: arr }})); }}><ChevronDown size={16} /></button></div></div>))}{inactiveSections.map(s => (<div key={s} className="setting-row" style={{ padding: '10px 0', borderBottom: '1px solid hsl(var(--border))', borderTop: 'none', opacity: 0.6 }}><div style={{ display: 'flex', alignItems: 'center', gap: 12 }}><button className="icon-button" style={{ width: 32, height: 32, minWidth: 32, minHeight: 32 }} onClick={() => { update(st => ({ ...st, preferences: { ...st.preferences, sectionOrder: [...st.preferences.sectionOrder, s] }})); }}><Plus size={16} /></button><strong style={{ fontSize: 13 }}>{sectionLabels[s] || s}</strong></div></div>))}</div></section></div><div className="stack"><section className="card settings-card"><h2>Connected Services</h2><p>Link external tools to shape your day.</p><div className="setting-row"><div><strong>Calendar</strong><span>{state.preferences.calendarConnected === 'none' ? 'Not connected' : `Connected`}</span></div><select className="field" style={{ width: 'auto', minWidth: 120, height: 44, padding: '0 12px' }} value={state.preferences.calendarConnected || 'none'} onChange={e => update(s => ({ ...s, preferences: { ...s.preferences, calendarConnected: e.target.value as any } }))}><option value="none">None</option><option value="google">Google Calendar</option><option value="outlook">Outlook</option></select></div></section><section className="card settings-card"><h2>Your privacy</h2><p>My Day is designed to feel personal without being mysterious.</p><div className="soft-card" style={{ padding: 15, display: 'flex', gap: 11, alignItems: 'flex-start' }}><ShieldCheck size={18} color="hsl(var(--primary))" /><div><strong style={{ fontSize: 12 }}>Stored on this device</strong><p style={{ margin: '4px 0 0', fontSize: 11, lineHeight: 1.5 }}>Your tasks, captures, and preferences live in local storage. Nothing in this MVP is sent to an external assistant.</p></div></div><div className="setting-row"><div><strong>Clear all day data</strong><span>Return to the welcoming sample day.</span></div><button className="button button-danger" onClick={reset} data-testid="button-reset-data"><RotateCcw size={14} /> Reset</button></div></section><section className="soft-card" style={{ padding: 20 }}><div style={{ display: 'flex', gap: 11 }}><Keyboard size={17} color="hsl(var(--primary))" /><div><strong style={{ fontSize: 12 }}>A few useful keys</strong><p style={{ margin: '7px 0 0', color: 'hsl(var(--muted-foreground))', fontSize: 11, lineHeight: 1.65 }}>Use Command + Enter to save a quick capture. Your attention is the main interface.</p></div></div></section></div></div></div>;
+  return <div className="page-wrap"><PageHeader eyebrow="The way it feels" title={<>Make it <span className="serif">yours.</span></>} subtitle="A few gentle controls for how My Day holds your life." /><div className="settings-grid"><div className="stack"><section className="card settings-card"><h2>Appearance</h2><p>Choose colors and fonts that feel right.</p><div className="setting-row"><div><strong>Color theme</strong><span>Light or dark mode</span></div><button className={`switch ${state.preferences.dark ? 'on' : ''}`} onClick={() => update((s) => ({ ...s, preferences: { ...s.preferences, dark: !s.preferences.dark } }))} aria-label="Toggle dark mode" data-testid="switch-dark-mode" /></div><div className="setting-row"><div><strong>App Font</strong><span>Personalize your reading experience</span></div><select className="field" style={{ width: 'auto', minWidth: 120, height: 44, padding: '0 12px' }} value={state.preferences.fontStyle || 'modern'} onChange={e => update(s => ({ ...s, preferences: { ...s.preferences, fontStyle: e.target.value as any } }))}><option value="modern">Modern (DM Sans)</option><option value="classic">Classic (Lora)</option><option value="rounded">Rounded (Nunito)</option></select></div><div className="setting-row" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 12 }}><div><strong>Accent color</strong><span>Used for highlights and active states</span></div><div className="swatches" style={{ flexWrap: 'wrap' }} role="radiogroup" aria-label="Accent color">{accents.map((accent) => <button key={accent.value} className={`swatch ${state.preferences.accent === accent.value ? 'selected' : ''}`} style={{ background: accent.value }} onClick={() => { update((s) => ({ ...s, preferences: { ...s.preferences, accent: accent.value } })); setNotice(`${accent.name} is a good choice.`); }} aria-label={`Use ${accent.name} accent`} data-testid={`button-accent-${accent.name.toLowerCase()}`} />)}</div></div></section><section className="card settings-card"><h2>Customize Today</h2><p>Reorder or hide sections on your Today view.</p><div className="stack" style={{ gap: 0, marginTop: 12 }}>{activeSections.map((s, idx) => (<div key={s} className="setting-row" style={{ padding: '10px 0', borderBottom: '1px solid hsl(var(--border))', borderTop: 'none' }}><div style={{ display: 'flex', alignItems: 'center', gap: 12 }}><button className="icon-button" style={{ width: 32, height: 32, minWidth: 32, minHeight: 32 }} onClick={() => { update(st => ({ ...st, preferences: { ...st.preferences, sectionOrder: st.preferences.sectionOrder.filter(x => x !== s) }})); }}><Check size={16} color="hsl(var(--primary))" /></button><strong style={{ fontSize: 13 }}>{sectionLabels[s] || s}</strong></div><div style={{ display: 'flex', gap: 4 }}><button className="icon-button" style={{ width: 32, height: 32, minWidth: 32, minHeight: 32 }} disabled={idx === 0} onClick={() => { const arr = [...state.preferences.sectionOrder]; [arr[idx], arr[idx - 1]] = [arr[idx - 1], arr[idx]]; update(st => ({ ...st, preferences: { ...st.preferences, sectionOrder: arr }})); }}><ChevronUp size={16} /></button><button className="icon-button" style={{ width: 32, height: 32, minWidth: 32, minHeight: 32 }} disabled={idx === activeSections.length - 1} onClick={() => { const arr = [...state.preferences.sectionOrder]; [arr[idx], arr[idx + 1]] = [arr[idx + 1], arr[idx]]; update(st => ({ ...st, preferences: { ...st.preferences, sectionOrder: arr }})); }}><ChevronDown size={16} /></button></div></div>))}{inactiveSections.map(s => (<div key={s} className="setting-row" style={{ padding: '10px 0', borderBottom: '1px solid hsl(var(--border))', borderTop: 'none', opacity: 0.6 }}><div style={{ display: 'flex', alignItems: 'center', gap: 12 }}><button className="icon-button" style={{ width: 32, height: 32, minWidth: 32, minHeight: 32 }} onClick={() => { update(st => ({ ...st, preferences: { ...st.preferences, sectionOrder: [...st.preferences.sectionOrder, s] }})); }}><Plus size={16} /></button><strong style={{ fontSize: 13 }}>{sectionLabels[s] || s}</strong></div></div>))}</div></section></div><div className="stack"><section className="card settings-card"><h2>Connected Services</h2><p>Link external tools to shape your day.</p><div className="setting-row"><div><strong>Calendar</strong><span>{state.preferences.calendarConnected === 'none' ? 'Not connected' : `Connected`}</span></div><select className="field" style={{ width: 'auto', minWidth: 120, height: 44, padding: '0 12px' }} value={state.preferences.calendarConnected || 'none'} onChange={e => update(s => ({ ...s, preferences: { ...s.preferences, calendarConnected: e.target.value as any } }))}><option value="none">None</option><option value="google">Google Calendar</option><option value="outlook">Outlook</option></select></div></section><section className="card settings-card"><h2>Your privacy</h2><p>My Day is designed to feel personal without being mysterious.</p><div className="soft-card" style={{ padding: 15, display: 'flex', gap: 11, alignItems: 'flex-start' }}><ShieldCheck size={18} color="hsl(var(--primary))" /><div><strong style={{ fontSize: 12 }}>Saved to the cloud, tied to this browser</strong><p style={{ margin: '4px 0 0', fontSize: 11, lineHeight: 1.5 }}>Your tasks, captures, and preferences are stored in a private database and survive page refreshes and browser restarts. They are linked to a cookie in this browser — clearing cookies or using a different device will start fresh with sample data.</p></div></div><div className="setting-row"><div><strong>Clear all day data</strong><span>Return to the welcoming sample day.</span></div><button className="button button-danger" onClick={reset} data-testid="button-reset-data"><RotateCcw size={14} /> Reset</button></div></section><section className="soft-card" style={{ padding: 20 }}><div style={{ display: 'flex', gap: 11 }}><Keyboard size={17} color="hsl(var(--primary))" /><div><strong style={{ fontSize: 12 }}>A few useful keys</strong><p style={{ margin: '7px 0 0', color: 'hsl(var(--muted-foreground))', fontSize: 11, lineHeight: 1.65 }}>Use Command + Enter to save a quick capture. Your attention is the main interface.</p></div></div></section></div></div></div>;
 }
 
 function NotFoundView() { return <div className="page-wrap"><div className="empty-state" style={{ marginTop: '15vh' }}><Compass size={25} /><h1 className="page-title" style={{ fontSize: 35 }}>A quiet dead end.</h1><p>That page is not part of today.</p><Link className="button button-primary" href="/" data-testid="link-back-home">Back to today</Link></div></div>; }
@@ -483,9 +573,36 @@ function Router({ app }: { app: ReturnType<typeof useAppState> }) {
   return <Shell><ErrorBoundary resetKey={window.location.pathname}><Switch><Route path="/" component={() => <Home app={app} />} /><Route path="/plan" component={() => <Plan app={app} />} /><Route path="/projects" component={() => <Projects app={app} />} /><Route path="/capture" component={() => <CapturePage app={app} />} /><Route path="/me" component={() => <Me app={app} />} /><Route component={NotFoundView} /></Switch></ErrorBoundary></Shell>;
 }
 
-function App() {
+/** Inner app — runs inside QueryClientProvider so hooks work */
+function AppInner() {
   const app = useAppState();
-  return <QueryClientProvider client={queryClient}><TooltipProvider><WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}><Router app={app} /></WouterRouter><Toaster />{app.notice && <div className="toast-note" role="status" data-testid="status-toast">{app.notice}</div>}</TooltipProvider></QueryClientProvider>;
+
+  if (app.isLoading) {
+    return (
+      <div style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 16 }}>
+        <Logo />
+        <p style={{ color: 'hsl(var(--muted-foreground))', fontSize: 13 }}>Setting up your day…</p>
+      </div>
+    );
+  }
+
+  return (
+    <TooltipProvider>
+      <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
+        <Router app={app} />
+      </WouterRouter>
+      <Toaster />
+      {app.notice && <div className="toast-note" role="status" data-testid="status-toast">{app.notice}</div>}
+    </TooltipProvider>
+  );
+}
+
+function App() {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <AppInner />
+    </QueryClientProvider>
+  );
 }
 
 export default App;
