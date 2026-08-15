@@ -48,6 +48,21 @@ async function ensureSchema(): Promise<void> {
   await pool.query(`
     CREATE INDEX IF NOT EXISTS "IDX_session_expire" ON "session" ("expire")
   `);
+
+  // Google Calendar OAuth tokens, one row per (session, Google account).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS calendar_accounts (
+      id           SERIAL PRIMARY KEY,
+      session_id   TEXT        NOT NULL REFERENCES "session"(sid) ON DELETE CASCADE,
+      google_sub   TEXT        NOT NULL,
+      email        TEXT        NOT NULL,
+      access_token TEXT        NOT NULL,
+      refresh_token TEXT,
+      token_expiry  TIMESTAMPTZ,
+      created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+      CONSTRAINT uniq_session_google_sub UNIQUE (session_id, google_sub)
+    )
+  `);
 }
 
 ensureSchema()

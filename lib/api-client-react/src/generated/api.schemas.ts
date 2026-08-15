@@ -51,10 +51,16 @@ export interface CalendarPref {
   color?: string | null;
 }
 
+export interface CalendarAccount {
+  id: number;
+  email: string;
+}
+
 export interface CalendarStatus {
   connected: boolean;
   provider: string;
   outlookConnected?: boolean;
+  googleAccounts?: CalendarAccount[];
 }
 
 export interface ErrorResponse {

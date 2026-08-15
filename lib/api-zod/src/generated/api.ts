@@ -9,6 +9,26 @@ import * as zod from 'zod';
 
 
 /**
+ * @summary List connected Google accounts for this session
+ */
+export const GetAuthAccountsResponseItem = zod.object({
+  "id": zod.number(),
+  "email": zod.string()
+})
+export const GetAuthAccountsResponse = zod.array(GetAuthAccountsResponseItem)
+
+
+/**
+ * @summary Disconnect a Google account
+ */
+export const DeleteAuthAccountsIdParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const DeleteAuthAccountsIdResponse = zod.void()
+
+
+/**
  * Returns server health status
  * @summary Health check
  */
@@ -46,7 +66,11 @@ export const GetCalendarEventsResponse = zod.array(GetCalendarEventsResponseItem
 export const GetCalendarStatusResponse = zod.object({
   "connected": zod.boolean(),
   "provider": zod.string(),
-  "outlookConnected": zod.boolean().optional()
+  "outlookConnected": zod.boolean().optional(),
+  "googleAccounts": zod.array(zod.object({
+  "id": zod.number(),
+  "email": zod.string()
+})).optional()
 })
 
 
@@ -57,7 +81,7 @@ export const GetCalendarWeekSummaryQueryParams = zod.object({
   "weekStart": zod.coerce.string().describe('ISO date string (YYYY-MM-DD) for the Monday of the week')
 })
 
-export const GetCalendarWeekSummaryResponse = zod.record(zod.string(), zod.number().int())
+export const GetCalendarWeekSummaryResponse = zod.record(zod.string(), zod.number())
 
 
 /**

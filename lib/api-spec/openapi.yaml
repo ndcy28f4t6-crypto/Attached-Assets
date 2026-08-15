@@ -14,7 +14,37 @@ tags:
     description: Calendar operations
   - name: app
     description: App state operations
+  - name: auth
+    description: Authentication and connected account management
 paths:
+  /auth/accounts:
+    get:
+      operationId: getAuthAccounts
+      tags: [auth]
+      summary: List connected Google accounts for this session
+      responses:
+        "200":
+          description: List of connected accounts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CalendarAccount"
+  /auth/accounts/{id}:
+    delete:
+      operationId: deleteAuthAccountsId
+      tags: [auth]
+      summary: Disconnect a Google account
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: number
+      responses:
+        "204":
+          description: Account disconnected
   /healthz:
     get:
       operationId: healthCheck
@@ -87,7 +117,7 @@ paths:
               schema:
                 type: object
                 additionalProperties:
-                  type: integer
+                  type: number
         "503":
           description: Calendar not connected
           content:
@@ -205,6 +235,14 @@ components:
           type: boolean
         color:
           type: ["string", "null"]
+    CalendarAccount:
+      type: object
+      required: [id, email]
+      properties:
+        id:
+          type: number
+        email:
+          type: string
     CalendarStatus:
       type: object
       required: [connected, provider]
@@ -215,6 +253,10 @@ components:
           type: string
         outlookConnected:
           type: boolean
+        googleAccounts:
+          type: array
+          items:
+            $ref: "#/components/schemas/CalendarAccount"
     ErrorResponse:
       type: object
       required: [error]

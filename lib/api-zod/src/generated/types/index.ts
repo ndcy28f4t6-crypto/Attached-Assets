@@ -7,6 +7,7 @@
  */
 
 export * from './appState';
+export * from './calendarAccount';
 export * from './calendarEvent';
 export * from './calendarMeta';
 export * from './calendarMetaProvider';

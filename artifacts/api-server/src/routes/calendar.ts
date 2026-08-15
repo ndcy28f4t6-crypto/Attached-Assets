@@ -1,5 +1,7 @@
 import { Router, type IRouter } from "express";
 import { ReplitConnectors } from "@replit/connectors-sdk";
+import { pool } from "@workspace/db";
+import { getValidToken } from "../lib/googleAuth.js";
 
 const router: IRouter = Router();
 
@@ -52,17 +54,48 @@ type CalendarEventEntry = {
   calendarColor: string | null;
 };
 
-/** Fetch the user's Google calendar list. Retries once on failure before returning []. */
-async function fetchGoogleCalendarList(connectors: ReturnType<typeof getConnectors>): Promise<GoogleCalendarItem[]> {
+type StoredAccount = {
+  id: number;
+  email: string;
+  accessToken: string;
+  refreshToken: string | null;
+  tokenExpiry: Date | null;
+};
+
+/** Query all Google accounts stored for a given session. */
+async function getSessionAccounts(sessionId: string): Promise<StoredAccount[]> {
+  const result = await pool.query<{
+    id: number;
+    email: string;
+    access_token: string;
+    refresh_token: string | null;
+    token_expiry: Date | null;
+  }>(
+    "SELECT id, email, access_token, refresh_token, token_expiry FROM calendar_accounts WHERE session_id = $1",
+    [sessionId],
+  );
+  return result.rows.map((row) => ({
+    id: row.id,
+    email: row.email,
+    accessToken: row.access_token,
+    refreshToken: row.refresh_token,
+    tokenExpiry: row.token_expiry,
+  }));
+}
+
+/** Fetch calendar list for a single Google account. Returns [] on error. */
+async function fetchGoogleCalendarListForAccount(
+  account: StoredAccount,
+): Promise<GoogleCalendarItem[]> {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const resp = await connectors.proxy(
-        "google-calendar",
-        "/calendar/v3/users/me/calendarList?maxResults=250",
-        { method: "GET" }
+      const token = await getValidToken(account);
+      const resp = await fetch(
+        "https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=250",
+        { headers: { Authorization: `Bearer ${token}` } },
       );
       if (resp.ok) {
-        const data = await resp.json() as { items?: GoogleCalendarItem[] };
+        const data = (await resp.json()) as { items?: GoogleCalendarItem[] };
         return data.items ?? [];
       }
     } catch {
@@ -118,138 +151,48 @@ async function fetchOutlookCalendarList(connectors: ReturnType<typeof getConnect
   }
 }
 
-router.get("/calendar/status", async (_req, res): Promise<void> => {
+router.get("/calendar/status", async (req, res): Promise<void> => {
   try {
     const connectors = getConnectors();
-    const [googleItems, outlookConnected] = await Promise.all([
-      fetchGoogleCalendarList(connectors),
+    const [accounts, outlookConnected] = await Promise.all([
+      getSessionAccounts(req.sessionID),
       checkOutlookConnected(connectors),
     ]);
-    const googleConnected = googleItems.length > 0;
+    const googleAccounts = accounts.map((a) => ({ id: a.id, email: a.email }));
     res.json({
-      connected: googleConnected || outlookConnected,
-      provider: googleConnected ? "google" : outlookConnected ? "outlook" : "none",
+      connected: googleAccounts.length > 0 || outlookConnected,
+      provider: googleAccounts.length > 0 ? "google" : outlookConnected ? "outlook" : "none",
       outlookConnected,
+      googleAccounts,
     });
   } catch {
-    res.json({ connected: false, provider: "none", outlookConnected: false });
-  }
-});
-
-router.get("/calendar/week-summary", async (req, res): Promise<void> => {
-  try {
-    const connectors = getConnectors();
-    const weekStartParam = typeof req.query["weekStart"] === "string" ? req.query["weekStart"] : null;
-    if (!weekStartParam) {
-      res.status(400).json({ error: "weekStart query parameter is required" });
-      return;
-    }
-
-    // Build the 7-day window
-    const weekStart = new Date(`${weekStartParam}T00:00:00`);
-    const days: string[] = [];
-    for (let i = 0; i < 7; i++) {
-      const d = new Date(weekStart);
-      d.setDate(weekStart.getDate() + i);
-      const y = d.getFullYear();
-      const m = String(d.getMonth() + 1).padStart(2, "0");
-      const dd = String(d.getDate()).padStart(2, "0");
-      days.push(`${y}-${m}-${dd}`);
-    }
-
-    const [googleItems, outlookEntries] = await Promise.all([
-      fetchGoogleCalendarList(connectors),
-      fetchOutlookCalendarList(connectors),
-    ]);
-
-    if (googleItems.length === 0 && outlookEntries.length === 0) {
-      // No calendar connected — return all zeros so UI degrades gracefully
-      const summary: Record<string, number> = {};
-      for (const day of days) summary[day] = 0;
-      res.json(summary);
-      return;
-    }
-
-    const selectedGoogleCals = googleItems.filter((cal) => cal.selected !== false);
-
-    // Fetch all 7 days in parallel across both providers
-    const dayCounts = await Promise.all(
-      days.map(async (dateStr): Promise<number> => {
-        const dayStart = new Date(`${dateStr}T00:00:00`);
-        const dayEnd = new Date(`${dateStr}T23:59:59`);
-        const timeMin = encodeURIComponent(toISOWithOffset(dayStart));
-        const timeMax = encodeURIComponent(toISOWithOffset(dayEnd));
-
-        // Google calendars
-        const googleCounts = await Promise.all(
-          selectedGoogleCals.map(async (cal): Promise<number> => {
-            try {
-              const encodedId = encodeURIComponent(cal.id);
-              const eventsResp = await connectors.proxy(
-                "google-calendar",
-                `/calendar/v3/calendars/${encodedId}/events?timeMin=${timeMin}&timeMax=${timeMax}&singleEvents=true&maxResults=50`,
-                { method: "GET" }
-              );
-              if (!eventsResp.ok) return 0;
-              const data = await eventsResp.json() as { items?: unknown[] };
-              return (data.items ?? []).length;
-            } catch {
-              return 0;
-            }
-          })
-        );
-
-        // Outlook calendars
-        const outlookCounts = await Promise.all(
-          outlookEntries.map(async (cal): Promise<number> => {
-            const rawId = cal.id.slice("outlook::".length);
-            try {
-              const eventsResp = await connectors.proxy(
-                "outlook",
-                `/v1.0/me/calendars/${encodeURIComponent(rawId)}/events?$filter=start/dateTime ge '${dayStart.toISOString()}' and end/dateTime le '${dayEnd.toISOString()}'&$top=50&$select=id`,
-                { method: "GET" }
-              );
-              if (!eventsResp.ok) return 0;
-              const data = await eventsResp.json() as { value?: unknown[] };
-              return (data.value ?? []).length;
-            } catch {
-              return 0;
-            }
-          })
-        );
-
-        return [...googleCounts, ...outlookCounts].reduce((sum, n) => sum + n, 0);
-      })
-    );
-
-    const summary: Record<string, number> = {};
-    for (let i = 0; i < days.length; i++) {
-      summary[days[i]] = dayCounts[i];
-    }
-    res.json(summary);
-  } catch (err) {
-    req.log.error({ err }, "Calendar week-summary error");
-    res.status(503).json({ error: "Calendar not connected or unavailable" });
+    res.json({ connected: false, provider: "none", outlookConnected: false, googleAccounts: [] });
   }
 });
 
 router.get("/calendar/calendars", async (req, res): Promise<void> => {
   try {
     const connectors = getConnectors();
-    const [googleItems, outlookEntries] = await Promise.all([
-      fetchGoogleCalendarList(connectors),
-      fetchOutlookCalendarList(connectors),
-    ]);
+    const accounts = await getSessionAccounts(req.sessionID);
 
+    // Fetch calendar lists from all Google accounts in parallel
+    const googleResults = await Promise.all(
+      accounts.map(async (account): Promise<CalendarEntry[]> => {
+        const items = await fetchGoogleCalendarListForAccount(account);
+        return items.map((cal): CalendarEntry => ({
+          id: `${account.email}::${cal.id}`,
+          name: cal.summary ?? cal.id,
+          color: cal.backgroundColor ?? "#4285f4",
+          accessRole: cal.accessRole ?? "reader",
+          selected: cal.selected !== false,
+          provider: "google",
+        }));
+      }),
+    );
+
+    const outlookEntries = await fetchOutlookCalendarList(connectors);
     const calendars: CalendarEntry[] = [
-      ...googleItems.map((cal): CalendarEntry => ({
-        id: cal.id,
-        name: cal.summary ?? cal.id,
-        color: cal.backgroundColor ?? "#4285f4",
-        accessRole: cal.accessRole ?? "reader",
-        selected: cal.selected !== false,
-        provider: "google",
-      })),
+      ...googleResults.flat(),
       ...outlookEntries,
     ];
 
@@ -264,11 +207,9 @@ router.get("/calendar/events", async (req, res): Promise<void> => {
   try {
     const connectors = getConnectors();
 
-    // Determine the target date (defaults to today)
     const dateParam = typeof req.query["date"] === "string" ? req.query["date"] : null;
     const targetDate = dateParam ? new Date(dateParam) : new Date();
 
-    // Build day-start and day-end in local time
     const dayStart = new Date(targetDate);
     dayStart.setHours(0, 0, 0, 0);
     const dayEnd = new Date(targetDate);
@@ -277,73 +218,78 @@ router.get("/calendar/events", async (req, res): Promise<void> => {
     const timeMin = encodeURIComponent(toISOWithOffset(dayStart));
     const timeMax = encodeURIComponent(toISOWithOffset(dayEnd));
 
-    const googleItems = await fetchGoogleCalendarList(connectors);
-    if (googleItems.length === 0) {
-      res.status(503).json({ error: "Calendar not connected or unavailable" });
-      return;
-    }
+    const accounts = await getSessionAccounts(req.sessionID);
 
-    // Only query Google calendars that the user has selected
-    const selectedGoogleCals = googleItems.filter((cal) => cal.selected !== false);
-
-    // Fan out event queries across all Google calendars in parallel
+    // Fan out across all Google accounts
     const googleEventResults = await Promise.all(
-      selectedGoogleCals.map(async (cal): Promise<CalendarEventEntry[]> => {
+      accounts.map(async (account): Promise<CalendarEventEntry[]> => {
         try {
-          const encodedId = encodeURIComponent(cal.id);
-          const eventsResp = await connectors.proxy(
-            "google-calendar",
-            `/calendar/v3/calendars/${encodedId}/events?timeMin=${timeMin}&timeMax=${timeMax}&singleEvents=true&orderBy=startTime&maxResults=50`,
-            { method: "GET" }
+          const token = await getValidToken(account);
+          const items = await fetchGoogleCalendarListForAccount(account);
+          const selectedCals = items.filter((cal) => cal.selected !== false);
+
+          const calEventResults = await Promise.all(
+            selectedCals.map(async (cal): Promise<CalendarEventEntry[]> => {
+              try {
+                const encodedId = encodeURIComponent(cal.id);
+                const eventsResp = await fetch(
+                  `https://www.googleapis.com/calendar/v3/calendars/${encodedId}/events?timeMin=${timeMin}&timeMax=${timeMax}&singleEvents=true&orderBy=startTime&maxResults=50`,
+                  { headers: { Authorization: `Bearer ${token}` } },
+                );
+                if (!eventsResp.ok) {
+                  req.log.warn(
+                    { calendarId: cal.id, status: eventsResp.status },
+                    "Events fetch failed for calendar",
+                  );
+                  return [];
+                }
+                const data = (await eventsResp.json()) as {
+                  items?: Array<{
+                    id: string;
+                    summary?: string;
+                    start?: { dateTime?: string; date?: string };
+                    end?: { dateTime?: string; date?: string };
+                    location?: string;
+                    description?: string;
+                    colorId?: string;
+                  }>;
+                };
+                return (data.items ?? []).map((item): CalendarEventEntry => {
+                  const startRaw = item.start?.dateTime ?? item.start?.date ?? "";
+                  const endRaw = item.end?.dateTime ?? item.end?.date ?? "";
+                  const allDay = !item.start?.dateTime;
+                  return {
+                    id: `${account.email}::${cal.id}::${item.id}`,
+                    title: item.summary ?? "(No title)",
+                    start: startRaw,
+                    end: endRaw,
+                    allDay,
+                    location: item.location ?? null,
+                    description: item.description ?? null,
+                    calendarId: `${account.email}::${cal.id}`,
+                    calendarName: cal.summary ?? null,
+                    color: item.colorId ?? null,
+                    calendarColor: cal.backgroundColor ?? null,
+                  };
+                });
+              } catch (err) {
+                req.log.warn({ calendarId: cal.id, err }, "Error fetching events for calendar");
+                return [];
+              }
+            }),
           );
-
-          if (!eventsResp.ok) {
-            req.log.warn({ calendarId: cal.id, status: eventsResp.status }, "Events fetch failed for calendar");
-            return [];
-          }
-
-          const data = await eventsResp.json() as {
-            items?: Array<{
-              id: string;
-              summary?: string;
-              start?: { dateTime?: string; date?: string };
-              end?: { dateTime?: string; date?: string };
-              location?: string;
-              description?: string;
-              colorId?: string;
-            }>;
-          };
-
-          return (data.items ?? []).map((item): CalendarEventEntry => {
-            const startRaw = item.start?.dateTime ?? item.start?.date ?? "";
-            const endRaw = item.end?.dateTime ?? item.end?.date ?? "";
-            const allDay = !item.start?.dateTime;
-            return {
-              id: `${cal.id}::${item.id}`,
-              title: item.summary ?? "(No title)",
-              start: startRaw,
-              end: endRaw,
-              allDay,
-              location: item.location ?? null,
-              description: item.description ?? null,
-              calendarId: cal.id,
-              calendarName: cal.summary ?? null,
-              color: item.colorId ?? null,
-              calendarColor: cal.backgroundColor ?? null,
-            };
-          });
+          return calEventResults.flat();
         } catch (err) {
-          req.log.warn({ calendarId: cal.id, err }, "Error fetching events for calendar");
+          req.log.warn({ accountEmail: account.email, err }, "Error fetching Google events for account");
           return [];
         }
-      })
+      }),
     );
 
     // Fetch Outlook events per-calendar so calendarId matches the calendar list keys
     const outlookEntries = await fetchOutlookCalendarList(connectors);
     const outlookEventResults = await Promise.all(
       outlookEntries.map(async (cal): Promise<CalendarEventEntry[]> => {
-        // cal.id is "outlook::<rawOutlookId>"; extract the raw ID for the API call
         const rawId = cal.id.slice("outlook::".length);
         try {
           const eventsResp = await connectors.proxy(
@@ -371,7 +317,7 @@ router.get("/calendar/events", async (req, res): Promise<void> => {
             allDay: item.isAllDay ?? false,
             location: item.location?.displayName ?? null,
             description: item.bodyPreview ?? null,
-            calendarId: cal.id,  // "outlook::<rawId>" — matches the calendar list
+            calendarId: cal.id,
             calendarName: cal.name,
             color: null,
             calendarColor: cal.color,
@@ -382,7 +328,6 @@ router.get("/calendar/events", async (req, res): Promise<void> => {
       })
     );
 
-    // Flatten all results and sort by start time
     const events: CalendarEventEntry[] = [
       ...googleEventResults.flat(),
       ...outlookEventResults.flat(),

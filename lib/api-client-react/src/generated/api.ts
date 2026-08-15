@@ -21,6 +21,7 @@ import type {
 
 import type {
   AppState,
+  CalendarAccount,
   CalendarEvent,
   CalendarMeta,
   CalendarStatus,
@@ -57,6 +58,154 @@ const withQueryKey = <T extends object, K>(query: T, queryKey: K): T & { queryKe
   }
   return result;
 };
+
+export const getGetAuthAccountsUrl = () => {
+
+
+
+
+  return `/api/auth/accounts`
+}
+
+/**
+ * @summary List connected Google accounts for this session
+ */
+export const getAuthAccounts = async ( options?: Parameters<typeof customFetch>[1]): Promise<CalendarAccount[]> => {
+
+  return customFetch<CalendarAccount[]>(getGetAuthAccountsUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetAuthAccountsQueryKey = () => {
+    return [
+    `/api/auth/accounts`
+    ] as const;
+    }
+
+
+export const getGetAuthAccountsQueryOptions = <TData = Awaited<ReturnType<typeof getAuthAccounts>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getAuthAccounts>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetAuthAccountsQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getAuthAccounts>>> = ({ signal }) => getAuthAccounts({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getAuthAccounts>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetAuthAccountsQueryResult = NonNullable<Awaited<ReturnType<typeof getAuthAccounts>>>
+export type GetAuthAccountsQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary List connected Google accounts for this session
+ */
+
+export function useGetAuthAccounts<TData = Awaited<ReturnType<typeof getAuthAccounts>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getAuthAccounts>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetAuthAccountsQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getDeleteAuthAccountsIdUrl = (id: number,) => {
+
+
+
+
+  return `/api/auth/accounts/${id}`
+}
+
+/**
+ * @summary Disconnect a Google account
+ */
+export const deleteAuthAccountsId = async (id: number, options?: Parameters<typeof customFetch>[1]): Promise<void> => {
+
+  return customFetch<void>(getDeleteAuthAccountsIdUrl(id),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+
+export const getDeleteAuthAccountsIdMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteAuthAccountsId>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteAuthAccountsId>>, TError,{id: number}, TContext> => {
+
+const mutationKey = ['deleteAuthAccountsId'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteAuthAccountsId>>, {id: number}> = (props) => {
+          const {id} = props ?? {};
+
+          return  deleteAuthAccountsId(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteAuthAccountsIdMutationResult = NonNullable<Awaited<ReturnType<typeof deleteAuthAccountsId>>>
+
+    export type DeleteAuthAccountsIdMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Disconnect a Google account
+ */
+export const useDeleteAuthAccountsId = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteAuthAccountsId>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof deleteAuthAccountsId>>,
+        TError,
+        {id: number},
+        TContext
+      > => {
+      return useMutation(getDeleteAuthAccountsIdMutationOptions(options));
+    }
 
 export const getHealthCheckUrl = () => {
 
