@@ -65,7 +65,7 @@ type Task = {
 };
 type Project = { id: string; name: string; description: string; color: string; goal: string };
 type Capture = { id: string; text: string; createdAt: string; converted: boolean };
-type Preferences = { dark: boolean; accent: string; memory: boolean; reminders: boolean; sectionOrder: string[]; fontStyle: 'modern' | 'classic' | 'rounded'; calendarConnected: 'none' | 'google' | 'outlook'; calendarPrefs?: Record<string, { visible: boolean; color: string | null }> };
+type Preferences = { dark: boolean; accent: string; memory: boolean; reminders: boolean; sectionOrder: string[]; fontStyle: 'modern' | 'classic' | 'rounded'; calendarConnected: 'none' | 'google' | 'outlook'; calendarPrefs?: Record<string, { visible: boolean; color: string | null }>; dismissedDuplicates?: string[] };
 type WaitingFor = { id: string; person: string; item: string; addedAt: string };
 type AppState = { tasks: Task[]; projects: Project[]; captures: Capture[]; preferences: Preferences; waitingFor: WaitingFor[] };
 

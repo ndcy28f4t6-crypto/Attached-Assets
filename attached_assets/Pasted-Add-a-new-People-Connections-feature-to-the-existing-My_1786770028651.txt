@@ -1,0 +1,102 @@
+Add a new “People & Connections” feature to the existing My Day AI app.
+
+The purpose is to help me stay connected with important people because I can lose track of time and unintentionally forget to reach out. This should feel like a gentle relationship assistant, not a CRM or another task list.
+
+Core features
+
+1. People
+
+* Let me add specific people I want to stay connected with.
+* Store name, relationship, preferred contact method, desired contact frequency, birthday/important dates, and optional notes.
+* Do NOT import my entire contact list automatically.
+
+2. Connection tracking
+Make logging extremely easy:
+
+* “I talked to Mom today.”
+* “I saw Sarah yesterday.”
+* “I just called my sister.”
+
+The AI should recognize the person and interaction and automatically update their last connection date.
+
+Also provide a one-tap Log Connection button.
+
+3. Smart reminders
+Allow me to choose a preferred connection rhythm (weekly, every 2 weeks, monthly, custom).
+
+Reminders should say:
+
+“It’s been a little while since you connected with Sarah. Want to check in?”
+
+Never use guilt-based language such as “overdue,” “you forgot,” or “you failed.”
+
+Account for upcoming calendar events. If I have dinner with Sarah tomorrow, don’t also remind me to call her.
+
+4. AI integration
+The existing AI assistant should understand commands such as:
+
+* “Who should I check in with?”
+* “When did I last talk to Mom?”
+* “Remind me to call Sarah next weekend.”
+* “I haven’t talked to Lisa in forever.”
+* “I just talked to my sister.”
+
+Create structured AI actions/tools where appropriate, such as:
+
+* create_person
+* log_connection
+* get_last_connection
+* get_people_to_check_in_with
+* create_connection_reminder
+* save_person_note
+* get_upcoming_birthdays
+
+5. Reconnection help
+If I say:
+
+“I haven’t talked to Sarah in months.”
+
+The AI should respond warmly and offer:
+
+* Draft a casual text
+* Call
+* Remind me later
+* Not now
+
+The AI can use saved notes/context to personalize the suggested message.
+
+6. Important dates
+Track birthdays and optional important dates and provide gentle reminders.
+
+7. Anti-nagging
+If I repeatedly dismiss a reminder, don’t keep nagging me. Offer:
+
+* Remind me less often
+* Change reminder time
+* Remind me monthly
+* Stop reminding me
+
+8. Calendar integration
+Use existing calendar functionality to recognize upcoming interactions with people and avoid duplicate reminders.
+
+UX requirements
+
+Keep this feature extremely simple and fast.
+
+The goal is:
+
+Think of someone → tell the AI → connection handled.
+
+Do NOT create relationship scores, streaks, productivity points, or guilt-based tracking.
+
+The feature should feel warm, elegant, private, and human.
+
+Add a People/Connections section to the existing navigation and a subtle “Stay Connected” card on the home screen when relevant.
+
+Important
+
+Do not rebuild the existing app.
+
+First inspect the current architecture and reuse the existing AI, database, calendar, reminders, voice, and notification systems wherever possible.
+
+Implement this as an integrated capability of My Day AI, not as a separate mini-app.
