@@ -363,7 +363,7 @@ function Home({ app }: { app: ReturnType<typeof useAppState> }) {
   const rightNames = state.preferences.sectionOrder.filter(n => ['timeline', 'quote'].includes(n));
 
   return <div className="page-wrap">
-    <PageHeader eyebrow={`Thursday, 24 October`} title={<>{greeting}, <span className="serif">Satin.</span></>} subtitle={`${remaining.length} things worth your attention today. We can make room for them.`} action={<button className="button button-secondary" onClick={() => setOverwhelmed(true)} data-testid="button-overwhelmed"><CircleHelp size={15} /> I'm overwhelmed</button>} />
+    <PageHeader eyebrow={new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })} title={<>{greeting}, <span className="serif">Satin.</span></>} subtitle={`${remaining.length} things worth your attention today. We can make room for them.`} action={<button className="button button-secondary" onClick={() => setOverwhelmed(true)} data-testid="button-overwhelmed"><CircleHelp size={15} /> I'm overwhelmed</button>} />
     <div className="grid-home">
       <div className="stack">
         {leftNames.map(renderSection)}
