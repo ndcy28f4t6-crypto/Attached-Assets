@@ -444,6 +444,28 @@ function localDateKey(date: Date) {
   return `${year}-${month}-${day}`;
 }
 
+function useLiveDate() {
+  const [now, setNow] = useState(() => new Date());
+
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+
+    const scheduleNextTick = () => {
+      const current = new Date();
+      const elapsedThisMinute = current.getSeconds() * 1000 + current.getMilliseconds();
+      timer = setTimeout(() => {
+        setNow(new Date());
+        scheduleNextTick();
+      }, 60_000 - elapsedThisMinute + 25);
+    };
+
+    scheduleNextTick();
+    return () => clearTimeout(timer);
+  }, []);
+
+  return now;
+}
+
 function formatPersonDate(value?: string) {
   if (!value) return '';
   const parsed = new Date(`${value.slice(0, 10)}T12:00:00`);
@@ -582,8 +604,9 @@ function WhatNowSection({ remaining, hour }: { remaining: Task[]; hour: number }
 
 function Home({ app }: { app: ReturnType<typeof useAppState> }) {
   const { state, toggleTask, removeTask, update, setNotice } = app;
-  const { data: todayCalendarEvents } = useGetCalendarEvents({ date: localDateKey(new Date()) });
-  const tomorrowDate = new Date();
+  const now = useLiveDate();
+  const { data: todayCalendarEvents } = useGetCalendarEvents({ date: localDateKey(now) });
+  const tomorrowDate = new Date(now);
   tomorrowDate.setDate(tomorrowDate.getDate() + 1);
   const { data: tomorrowCalendarEvents } = useGetCalendarEvents({ date: localDateKey(tomorrowDate) });
   const [overwhelmed, setOverwhelmed] = useState(false);
@@ -598,7 +621,7 @@ function Home({ app }: { app: ReturnType<typeof useAppState> }) {
     return personWords.length > 0 && personWords.every((word) => title.includes(word));
   })).slice(0, 2);
   
-  const hour = new Date().getHours();
+  const hour = now.getHours();
   let greeting = "Good evening";
   if (hour < 12) greeting = "Good morning";
   else if (hour < 17) greeting = "Good afternoon";
@@ -630,7 +653,7 @@ function Home({ app }: { app: ReturnType<typeof useAppState> }) {
       <section key="timeline" className="card timeline"><div className="section-title"><h2>Your shape of today</h2><span>Local time</span></div><div>{[['09:30', 'Send the revised proposal', 'Work rhythm'], ['11:00', 'Book a quiet place', 'Personal'], ['14:00', 'Portfolio notes', 'Portfolio refresh'], ['18:30', 'A walk before dinner', 'Personal']].map(([time, title, project], index) => <div className="timeline-item" key={title}><div className="timeline-time">{time}</div><div className="timeline-track"><span className="timeline-node" /><span className="timeline-line" /></div><div className="timeline-copy"><strong>{title}</strong><p>{project}</p></div></div>)}</div></section>
     );
     if (name === 'quote') {
-      const dayOfYear = Math.floor((Date.now() - new Date(new Date().getFullYear(), 0, 0).getTime()) / 86400000);
+      const dayOfYear = Math.floor((now.getTime() - new Date(now.getFullYear(), 0, 0).getTime()) / 86400000);
       const dailyQuote = QUOTES[dayOfYear % QUOTES.length];
       return (
         <section key="quote" className="soft-card" style={{ padding: 24, position: 'relative' }}><div style={{ fontSize: 60, fontFamily: 'var(--app-font-serif)', color: 'hsl(var(--primary))', opacity: 0.2, position: 'absolute', top: -5, left: 16, lineHeight: 1 }}>"</div><p style={{ position: 'relative', zIndex: 1, fontSize: 16, fontFamily: 'var(--app-font-serif)', lineHeight: 1.4, margin: '10px 0 0', fontStyle: 'italic' }}>{dailyQuote}</p></section>
@@ -643,7 +666,7 @@ function Home({ app }: { app: ReturnType<typeof useAppState> }) {
   const rightNames = state.preferences.sectionOrder.filter(n => ['timeline', 'quote'].includes(n));
 
   return <div className="page-wrap">
-    <PageHeader eyebrow={new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })} title={<>{greeting}, <span className="serif">Satin.</span></>} subtitle={`${remaining.length} things worth your attention today. We can make room for them.`} action={<button className="button button-secondary" onClick={() => setOverwhelmed(true)} data-testid="button-overwhelmed"><CircleHelp size={15} /> I'm overwhelmed</button>} />
+     <PageHeader eyebrow={now.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })} title={<>{greeting}, <span className="serif">Satin.</span></>} subtitle={`${remaining.length} things worth your attention today. We can make room for them.`} action={<button className="button button-secondary" onClick={() => setOverwhelmed(true)} data-testid="button-overwhelmed"><CircleHelp size={15} /> I'm overwhelmed</button>} />
     {checkInPeople.length > 0 && <section className="card connection-nudge" data-testid="card-stay-connected"><div className="connection-nudge-icon"><HeartHandshake size={18} /></div><div><div className="eyebrow">Stay connected</div><h2>{checkInPeople.length === 1 ? `${checkInPeople[0].name} has been on your mind.` : 'A couple of people are on your mind.'}</h2><p>It’s been a little while. Want to check in, in whatever way feels natural?</p><Link className="button button-secondary" href="/people" data-testid="link-stay-connected">See people</Link></div></section>}
     <div className="grid-home">
       <div className="stack">
