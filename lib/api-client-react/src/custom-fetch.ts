@@ -360,7 +360,13 @@ export async function customFetch<T = unknown>(
 
   const requestInfo = { method, url: resolveUrl(input) };
 
-  const response = await fetch(input, { ...init, method, headers });
+  // When a baseUrl is configured the client is making cross-origin requests
+  // (e.g. an Expo web preview calling a separate API origin).  Default to
+  // "include" so session cookies are sent; callers can override via init.credentials.
+  const credentials: RequestCredentials =
+    init.credentials ?? (_baseUrl ? "include" : "same-origin");
+
+  const response = await fetch(input, { ...init, method, headers, credentials });
 
   if (!response.ok) {
     const errorData = await parseErrorBody(response, method);
