@@ -6,8 +6,8 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface CalendarStatus {
-  connected: boolean;
-  provider: string;
-  outlookConnected?: boolean;
+export interface CalendarPref {
+  visible: boolean;
+  /** @nullable */
+  color?: string | null;
 }

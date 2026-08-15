@@ -22,6 +22,7 @@ import type {
 import type {
   AppState,
   CalendarEvent,
+  CalendarMeta,
   CalendarStatus,
   ErrorResponse,
   GetCalendarEventsParams,
@@ -282,6 +283,83 @@ export function useGetCalendarStatus<TData = Awaited<ReturnType<typeof getCalend
  ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
 
   const queryOptions = getGetCalendarStatusQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getGetCalendarListUrl = () => {
+
+
+
+
+  return `/api/calendar/calendars`
+}
+
+/**
+ * @summary List all calendars the user has access to
+ */
+export const getCalendarList = async ( options?: Parameters<typeof customFetch>[1]): Promise<CalendarMeta[]> => {
+
+  return customFetch<CalendarMeta[]>(getGetCalendarListUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetCalendarListQueryKey = () => {
+    return [
+    `/api/calendar/calendars`
+    ] as const;
+    }
+
+
+export const getGetCalendarListQueryOptions = <TData = Awaited<ReturnType<typeof getCalendarList>>, TError = ErrorType<ErrorResponse>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getCalendarList>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetCalendarListQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getCalendarList>>> = ({ signal }) => getCalendarList({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getCalendarList>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetCalendarListQueryResult = NonNullable<Awaited<ReturnType<typeof getCalendarList>>>
+export type GetCalendarListQueryError = ErrorType<ErrorResponse>
+
+
+/**
+ * @summary List all calendars the user has access to
+ */
+
+export function useGetCalendarList<TData = Awaited<ReturnType<typeof getCalendarList>>, TError = ErrorType<ErrorResponse>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getCalendarList>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetCalendarListQueryOptions(options)
 
   const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
 

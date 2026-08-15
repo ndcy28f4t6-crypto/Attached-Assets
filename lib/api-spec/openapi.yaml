@@ -67,6 +67,26 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CalendarStatus"
+  /calendar/calendars:
+    get:
+      operationId: getCalendarList
+      tags: [calendar]
+      summary: List all calendars the user has access to
+      responses:
+        "200":
+          description: List of calendars
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CalendarMeta"
+        "503":
+          description: Calendar not connected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /app/state:
     get:
       operationId: getAppState
@@ -127,9 +147,36 @@ components:
           type: ["string", "null"]
         calendarId:
           type: string
+        calendarName:
+          type: ["string", "null"]
         color:
           type: ["string", "null"]
         calendarColor:
+          type: ["string", "null"]
+    CalendarMeta:
+      type: object
+      required: [id, name, color, accessRole, selected, provider]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        color:
+          type: string
+        accessRole:
+          type: string
+        selected:
+          type: boolean
+        provider:
+          type: string
+          enum: [google, outlook]
+    CalendarPref:
+      type: object
+      required: [visible]
+      properties:
+        visible:
+          type: boolean
+        color:
           type: ["string", "null"]
     CalendarStatus:
       type: object
@@ -139,6 +186,8 @@ components:
           type: boolean
         provider:
           type: string
+        outlookConnected:
+          type: boolean
     ErrorResponse:
       type: object
       required: [error]
@@ -214,6 +263,10 @@ components:
         calendarConnected:
           type: string
           enum: [none, google, outlook]
+        calendarPrefs:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/CalendarPref"
     WaitingFor:
       type: object
       required: [id, person, item, addedAt]

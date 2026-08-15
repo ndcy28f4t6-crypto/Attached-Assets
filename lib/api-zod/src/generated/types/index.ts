@@ -8,6 +8,9 @@
 
 export * from './appState';
 export * from './calendarEvent';
+export * from './calendarMeta';
+export * from './calendarMetaProvider';
+export * from './calendarPref';
 export * from './calendarStatus';
 export * from './capture';
 export * from './errorResponse';
@@ -15,6 +18,7 @@ export * from './getCalendarEventsParams';
 export * from './healthStatus';
 export * from './preferences';
 export * from './preferencesCalendarConnected';
+export * from './preferencesCalendarPrefs';
 export * from './preferencesFontStyle';
 export * from './project';
 export * from './task';

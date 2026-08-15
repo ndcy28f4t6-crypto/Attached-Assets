@@ -6,6 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { PreferencesCalendarConnected } from './preferencesCalendarConnected';
+import type { PreferencesCalendarPrefs } from './preferencesCalendarPrefs';
 import type { PreferencesFontStyle } from './preferencesFontStyle';
 
 export interface Preferences {
@@ -16,4 +17,5 @@ export interface Preferences {
   sectionOrder: string[];
   fontStyle: PreferencesFontStyle;
   calendarConnected: PreferencesCalendarConnected;
+  calendarPrefs?: PreferencesCalendarPrefs;
 }

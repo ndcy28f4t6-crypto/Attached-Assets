@@ -21,14 +21,40 @@ export interface CalendarEvent {
   description?: string | null;
   calendarId?: string;
   /** @nullable */
+  calendarName?: string | null;
+  /** @nullable */
   color?: string | null;
   /** @nullable */
   calendarColor?: string | null;
 }
 
+export type CalendarMetaProvider = typeof CalendarMetaProvider[keyof typeof CalendarMetaProvider];
+
+
+export const CalendarMetaProvider = {
+  google: 'google',
+  outlook: 'outlook',
+} as const;
+
+export interface CalendarMeta {
+  id: string;
+  name: string;
+  color: string;
+  accessRole: string;
+  selected: boolean;
+  provider: CalendarMetaProvider;
+}
+
+export interface CalendarPref {
+  visible: boolean;
+  /** @nullable */
+  color?: string | null;
+}
+
 export interface CalendarStatus {
   connected: boolean;
   provider: string;
+  outlookConnected?: boolean;
 }
 
 export interface ErrorResponse {
@@ -88,6 +114,8 @@ export const PreferencesCalendarConnected = {
   outlook: 'outlook',
 } as const;
 
+export type PreferencesCalendarPrefs = {[key: string]: CalendarPref};
+
 export interface Preferences {
   dark: boolean;
   accent: string;
@@ -96,6 +124,7 @@ export interface Preferences {
   sectionOrder: string[];
   fontStyle: PreferencesFontStyle;
   calendarConnected: PreferencesCalendarConnected;
+  calendarPrefs?: PreferencesCalendarPrefs;
 }
 
 export interface WaitingFor {

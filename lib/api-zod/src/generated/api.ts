@@ -33,6 +33,7 @@ export const GetCalendarEventsResponseItem = zod.object({
   "location": zod.string().nullish(),
   "description": zod.string().nullish(),
   "calendarId": zod.string().optional(),
+  "calendarName": zod.string().nullish(),
   "color": zod.string().nullish(),
   "calendarColor": zod.string().nullish()
 })
@@ -44,8 +45,23 @@ export const GetCalendarEventsResponse = zod.array(GetCalendarEventsResponseItem
  */
 export const GetCalendarStatusResponse = zod.object({
   "connected": zod.boolean(),
-  "provider": zod.string()
+  "provider": zod.string(),
+  "outlookConnected": zod.boolean().optional()
 })
+
+
+/**
+ * @summary List all calendars the user has access to
+ */
+export const GetCalendarListResponseItem = zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "color": zod.string(),
+  "accessRole": zod.string(),
+  "selected": zod.boolean(),
+  "provider": zod.enum(['google', 'outlook'])
+})
+export const GetCalendarListResponse = zod.array(GetCalendarListResponseItem)
 
 
 /**
@@ -83,7 +99,11 @@ export const GetAppStateResponse = zod.object({
   "reminders": zod.boolean(),
   "sectionOrder": zod.array(zod.string()),
   "fontStyle": zod.enum(['modern', 'classic', 'rounded']),
-  "calendarConnected": zod.enum(['none', 'google', 'outlook'])
+  "calendarConnected": zod.enum(['none', 'google', 'outlook']),
+  "calendarPrefs": zod.record(zod.string(), zod.object({
+  "visible": zod.boolean(),
+  "color": zod.string().nullish()
+})).optional()
 }),
   "waitingFor": zod.array(zod.object({
   "id": zod.string(),
@@ -129,7 +149,11 @@ export const SaveAppStateBody = zod.object({
   "reminders": zod.boolean(),
   "sectionOrder": zod.array(zod.string()),
   "fontStyle": zod.enum(['modern', 'classic', 'rounded']),
-  "calendarConnected": zod.enum(['none', 'google', 'outlook'])
+  "calendarConnected": zod.enum(['none', 'google', 'outlook']),
+  "calendarPrefs": zod.record(zod.string(), zod.object({
+  "visible": zod.boolean(),
+  "color": zod.string().nullish()
+})).optional()
 }),
   "waitingFor": zod.array(zod.object({
   "id": zod.string(),
@@ -170,7 +194,11 @@ export const SaveAppStateResponse = zod.object({
   "reminders": zod.boolean(),
   "sectionOrder": zod.array(zod.string()),
   "fontStyle": zod.enum(['modern', 'classic', 'rounded']),
-  "calendarConnected": zod.enum(['none', 'google', 'outlook'])
+  "calendarConnected": zod.enum(['none', 'google', 'outlook']),
+  "calendarPrefs": zod.record(zod.string(), zod.object({
+  "visible": zod.boolean(),
+  "color": zod.string().nullish()
+})).optional()
 }),
   "waitingFor": zod.array(zod.object({
   "id": zod.string(),

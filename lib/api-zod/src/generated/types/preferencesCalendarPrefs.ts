@@ -5,9 +5,6 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { CalendarPref } from './calendarPref';
 
-export interface CalendarStatus {
-  connected: boolean;
-  provider: string;
-  outlookConnected?: boolean;
-}
+export type PreferencesCalendarPrefs = {[key: string]: CalendarPref};

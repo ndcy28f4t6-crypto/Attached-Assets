@@ -18,6 +18,8 @@ export interface CalendarEvent {
   description?: string | null;
   calendarId?: string;
   /** @nullable */
+  calendarName?: string | null;
+  /** @nullable */
   color?: string | null;
   /** @nullable */
   calendarColor?: string | null;
