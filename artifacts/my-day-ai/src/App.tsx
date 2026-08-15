@@ -130,6 +130,40 @@ function toLocalState(s: ServerAppState): AppState {
   };
 }
 
+/** Extract the `_revision` field the server embeds in every AppState response. */
+function extractRevision(raw: unknown): number | null {
+  if (typeof raw === 'object' && raw !== null && '_revision' in raw) {
+    const r = (raw as Record<string, unknown>)._revision;
+    return typeof r === 'number' ? r : null;
+  }
+  return null;
+}
+
+/** True when an error is a 409 Conflict (another tab saved first). */
+function isConflictError(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { status?: number }).status === 409;
+}
+
+/**
+ * Merge two task lists from a concurrent-edit conflict.
+ * - Tasks present only on server are kept (added by another tab).
+ * - Tasks present only in local are kept (added by this tab).
+ * - Tasks in both get the local `done` value (most-recent user action wins).
+ * Order: server tasks first, then local-only additions.
+ */
+function mergeTasks(serverTasks: Task[], localTasks: Task[]): Task[] {
+  const serverById = new Map(serverTasks.map((t) => [t.id, t]));
+  const localById = new Map(localTasks.map((t) => [t.id, t]));
+  const merged: Task[] = serverTasks.map((t) => {
+    const l = localById.get(t.id);
+    return l ? { ...t, done: l.done } : t;
+  });
+  for (const t of localTasks) {
+    if (!serverById.has(t.id)) merged.push(t); // local-only task
+  }
+  return merged;
+}
+
 function useAppState() {
   const { data: serverState, isLoading: isServerLoading } = useGetAppState();
   const { mutateAsync: saveToServerAsync } = useSaveAppState();
@@ -139,6 +173,12 @@ function useAppState() {
   const initializedRef = useRef(false);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const queuedToastShownRef = useRef(false);
+  // Last revision received from the server — sent with every PUT for conflict detection.
+  const serverRevisionRef = useRef<number | null>(null);
+  // true while the debounce save timer is active (used to guard window-focus refetches).
+  const pendingSaveRef = useRef(false);
+  // true when setState is called with server-sourced data so the save effect skips it.
+  const suppressNextSaveRef = useRef(false);
 
   // Try to flush any changes that were queued during an outage
   const flushQueued = useCallback(async () => {
@@ -155,31 +195,49 @@ function useAppState() {
     }
   }, [saveToServerAsync]);
 
-  // Once we get the server state, initialize local state (with optional migration)
+  // Initialize local state from the server, and re-apply on every subsequent refetch.
+  // React Query refetches on window focus by default so re-focusing a tab always pulls
+  // the latest server revision, giving the tab an up-to-date base before any new edits.
   useEffect(() => {
-    if (isServerLoading || serverState === undefined || initializedRef.current) return;
+    if (isServerLoading || serverState === undefined) return;
 
-    const alreadyMigrated = localStorage.getItem(MIGRATION_FLAG_KEY);
-    if (!alreadyMigrated) {
-      // First visit: migrate any existing localStorage data
-      const legacyState = readLegacyLocalStorage();
-      localStorage.setItem(MIGRATION_FLAG_KEY, '1');
-      if (legacyState) {
-        // User had local data — persist it to server, use it as state
-        setState(legacyState);
-        saveToServerAsync({ data: legacyState as unknown as ServerAppState }).catch(() => {
-          sessionStorage.setItem(QUEUED_SAVE_KEY, JSON.stringify(legacyState));
-        });
-        initializedRef.current = true;
-        return;
+    // The server embeds _revision in the JSON response even though the TS type doesn't
+    // declare it.  Extract it before coercing the payload into our local AppState type.
+    const rev = extractRevision(serverState);
+
+    if (!initializedRef.current) {
+      // ── First load ──────────────────────────────────────────────────────────
+      const alreadyMigrated = localStorage.getItem(MIGRATION_FLAG_KEY);
+      if (!alreadyMigrated) {
+        // First visit: migrate any existing localStorage data
+        const legacyState = readLegacyLocalStorage();
+        localStorage.setItem(MIGRATION_FLAG_KEY, '1');
+        if (legacyState) {
+          // User had local data — persist it to server, use it as state
+          setState(legacyState);
+          saveToServerAsync({ data: legacyState as unknown as ServerAppState }).catch(() => {
+            sessionStorage.setItem(QUEUED_SAVE_KEY, JSON.stringify(legacyState));
+          });
+          initializedRef.current = true;
+          return;
+        }
       }
+      // Normal first-load path: use what the server returned, then flush queued saves
+      serverRevisionRef.current = rev;
+      setState(toLocalState(serverState));
+      initializedRef.current = true;
+      void flushQueued();
+      return;
     }
 
-    // Normal path: use what the server returned, then flush any queued saves
-    setState(toLocalState(serverState));
-    initializedRef.current = true;
-    // Server is reachable — attempt to flush any queued changes from a prior outage
-    void flushQueued();
+    // ── Subsequent refetch (e.g. refetchOnWindowFocus) ───────────────────────
+    // Skip if the user has unsaved local edits — we'd overwrite their in-progress work.
+    // Once their debounce save completes, the revision is current again.
+    if (!pendingSaveRef.current) {
+      serverRevisionRef.current = rev;
+      suppressNextSaveRef.current = true;
+      setState(toLocalState(serverState));
+    }
   }, [serverState, isServerLoading, saveToServerAsync, flushQueued]);
 
   // Retry queued saves every 30 seconds while the tab is open
@@ -188,17 +246,32 @@ function useAppState() {
     return () => clearInterval(id);
   }, [flushQueued]);
 
-  // Debounced server save on every state change — with exponential-backoff retry
+  // Debounced server save on every state change — with optimistic-concurrency and retry
   useEffect(() => {
     if (!state || !initializedRef.current) return;
+
+    // State came from the server (refetch or 409 merge) — don't echo it back.
+    if (suppressNextSaveRef.current) {
+      suppressNextSaveRef.current = false;
+      return;
+    }
+
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    pendingSaveRef.current = true;
     saveTimerRef.current = setTimeout(async () => {
-      const data = state as unknown as ServerAppState;
+      pendingSaveRef.current = false;
+
+      // Include the last known revision so the server can detect concurrent writes.
+      const data = { ...state, _clientRevision: serverRevisionRef.current } as unknown as ServerAppState;
       let saved = false;
+
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-          await saveToServerAsync({ data });
+          const response = await saveToServerAsync({ data });
           saved = true;
+          // Track the new revision so the next save is conditional against it.
+          const newRev = extractRevision(response);
+          if (newRev !== null) serverRevisionRef.current = newRev;
           // Clear any queued save — we just successfully wrote the latest state
           if (sessionStorage.getItem(QUEUED_SAVE_KEY)) {
             sessionStorage.removeItem(QUEUED_SAVE_KEY);
@@ -206,9 +279,37 @@ function useAppState() {
             toast({ title: 'Changes synced', description: 'Your queued changes have been saved.' });
           }
           break;
-        } catch {
+        } catch (err: unknown) {
+          // ── 409 Conflict ─────────────────────────────────────────────────────
+          // Another tab saved before us.  Merge the two states and retry once.
+          if (isConflictError(err)) {
+            const conflictErr = err as { data: unknown };
+            const serverData = conflictErr.data;
+            const serverRev = extractRevision(serverData);
+            const serverAppState = toLocalState(serverData as ServerAppState);
+            const mergedTasks = mergeTasks(serverAppState.tasks, state.tasks);
+            const mergedState: AppState = {
+              ...serverAppState,
+              tasks: mergedTasks,
+              preferences: state.preferences, // keep this tab's preference changes
+            };
+            if (serverRev !== null) serverRevisionRef.current = serverRev;
+            try {
+              const mergePayload = { ...mergedState, _clientRevision: serverRev } as unknown as ServerAppState;
+              const mergeResponse = await saveToServerAsync({ data: mergePayload });
+              const mergeRev = extractRevision(mergeResponse);
+              if (mergeRev !== null) serverRevisionRef.current = mergeRev;
+              // Update local state to the merged result without triggering another save
+              suppressNextSaveRef.current = true;
+              setState(mergedState);
+              saved = true;
+            } catch {
+              // Merge retry failed — fall through to queue the pending state
+            }
+            break; // Don't continue the retry loop after a 409
+          }
+          // ── Network error — exponential backoff ──────────────────────────────
           if (attempt < 3) {
-            // Exponential backoff: 300 ms → 600 ms between attempts
             await new Promise<void>((resolve) => setTimeout(resolve, 300 * Math.pow(2, attempt - 1)));
           }
         }
@@ -672,8 +773,10 @@ function titleSimilarity(first: string, second: string) {
   const a = normalizeWords(first);
   const b = normalizeWords(second);
   if (a.length === 0 || b.length === 0) return 0;
-  if (a.join(' ') === b.join(' ')) return 1;
   if ((a.length === 1 && b.length === 1) || (a.length === 1 && b.includes(a[0])) || (b.length === 1 && a.includes(b[0]))) return 0;
+  const aText = a.join(' ');
+  const bText = b.join(' ');
+  if (aText === bText) return 1;
   const aBigrams = new Set(a.slice(0, -1).map((word, index) => `${word} ${a[index + 1]}`));
   const bBigrams = new Set(b.slice(0, -1).map((word, index) => `${word} ${b[index + 1]}`));
   if (aBigrams.size === 0 || bBigrams.size === 0) return 0;

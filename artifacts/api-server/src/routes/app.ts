@@ -39,7 +39,8 @@ const seedState = {
   people: [],
 };
 
-// GET /app/state — returns state scoped to the caller's anonymous session
+// GET /app/state — returns state scoped to the caller's anonymous session.
+// The response includes a `_revision` field used for optimistic-concurrency control.
 router.get("/app/state", async (req, res): Promise<void> => {
   const sessionId = req.sessionID;
   try {
@@ -49,24 +50,35 @@ router.get("/app/state", async (req, res): Promise<void> => {
       .where(eq(appStateTable.sessionId, sessionId));
 
     if (rows.length > 0) {
-      res.json(rows[0].state);
+      res.json({ ...(rows[0].state as object), _revision: rows[0].revision });
       return;
     }
 
     // First visit for this session: insert seed state and return it
-    await db.insert(appStateTable).values({ sessionId, state: seedState });
-    res.json(seedState);
+    await db.insert(appStateTable).values({ sessionId, state: seedState, revision: 0 });
+    res.json({ ...seedState, _revision: 0 });
   } catch (err) {
     req.log.error({ err }, "getAppState error");
     res.status(500).json({ error: "Failed to load app state" });
   }
 });
 
-// PUT /app/state — replaces state scoped to the caller's anonymous session
+// PUT /app/state — replaces state scoped to the caller's anonymous session.
+//
+// Optimistic-concurrency control:
+//   • The client should include `_clientRevision` (the revision it last read) in the body.
+//   • If the stored revision has advanced past `_clientRevision` another tab saved first.
+//     In that case the handler returns 409 with the current server state so the client
+//     can merge its changes and retry.
+//   • If `_clientRevision` is omitted the write is unconditional (legacy / first-save path).
 router.put("/app/state", async (req, res): Promise<void> => {
   const sessionId = req.sessionID;
 
-  // Validate request body against the generated Zod schema
+  // Extract the client's known revision BEFORE Zod strips unknown fields.
+  const clientRevision: number | null =
+    typeof req.body._clientRevision === "number" ? req.body._clientRevision : null;
+
+  // Validate request body against the generated Zod schema (strips _clientRevision).
   const parsed = SaveAppStateBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid state body", details: parsed.error.flatten() });
@@ -76,16 +88,33 @@ router.put("/app/state", async (req, res): Promise<void> => {
   const state = parsed.data;
 
   try {
-    // Upsert scoped to this session's row only
+    // Read the current row so we can check the revision and do an atomic update.
+    const rows = await db
+      .select()
+      .from(appStateTable)
+      .where(eq(appStateTable.sessionId, sessionId));
+
+    if (rows.length > 0 && clientRevision !== null && rows[0].revision !== clientRevision) {
+      // Another tab has already saved a newer state — tell the client to merge and retry.
+      res.status(409).json({
+        ...(rows[0].state as object),
+        _revision: rows[0].revision,
+      });
+      return;
+    }
+
+    const nextRevision = rows.length > 0 ? rows[0].revision + 1 : 1;
+
+    // Upsert scoped to this session's row only.
     await db
       .insert(appStateTable)
-      .values({ sessionId, state })
+      .values({ sessionId, state, revision: nextRevision })
       .onConflictDoUpdate({
         target: appStateTable.sessionId,
-        set: { state, updatedAt: new Date() },
+        set: { state, revision: nextRevision, updatedAt: new Date() },
       });
 
-    res.json(state);
+    res.json({ ...state, _revision: nextRevision });
   } catch (err) {
     req.log.error({ err }, "saveAppState error");
     res.status(500).json({ error: "Failed to save app state" });

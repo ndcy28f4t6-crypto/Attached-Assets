@@ -1,10 +1,13 @@
-import { jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import { integer, jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
 // Stores the entire My Day AI app state as a single JSON blob per anonymous session.
 // Each browser gets a stable session ID (from express-session) that acts as the owner key.
 export const appStateTable = pgTable("app_state", {
   sessionId: text("session_id").primaryKey(),
   state: jsonb("state").notNull(),
+  // Monotonically-increasing counter used for optimistic-concurrency control.
+  // A PUT with a stale revision returns 409 so the client can merge and retry.
+  revision: integer("revision").notNull().default(0),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
