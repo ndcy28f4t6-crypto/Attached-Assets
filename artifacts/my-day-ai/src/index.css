@@ -243,8 +243,11 @@
 .calendar-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
 .calendar-head strong { font-size: 14px; }
 .week-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; }
-.day-cell { text-align: center; padding: 8px 2px; border-radius: 9px; color: hsl(var(--muted-foreground)); font-size: 10px; }
+.day-cell { text-align: center; padding: 8px 2px; border-radius: 9px; color: hsl(var(--muted-foreground)); font-size: 10px; cursor: pointer; transition: background 0.1s; }
+.day-cell:hover:not(.today) { background: hsl(var(--secondary)); color: hsl(var(--foreground)); }
 .day-cell.today { background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); }
+.day-cell.selected:not(.today) { outline: 2px solid hsl(var(--primary)); outline-offset: -2px; color: hsl(var(--foreground)); }
+.day-cell.today.selected { outline: 2px solid hsl(var(--primary-foreground) / 0.6); outline-offset: -2px; }
 .day-cell b { display: block; font-size: 13px; margin-top: 5px; }
 .calendar-event { margin-top: 18px; padding: 13px; border-radius: 11px; background: hsl(var(--secondary) / .72); border-left: 3px solid hsl(var(--primary)); }
 .calendar-event strong { font-size: 12px; display: block; }
