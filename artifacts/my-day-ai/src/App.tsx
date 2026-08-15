@@ -1,4 +1,5 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { toast } from '@/hooks/use-toast';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
@@ -25,6 +26,8 @@ const queryClient = new QueryClient();
 const LEGACY_STORAGE_KEY = 'my-day-ai-state-v1';
 // Flag so we only attempt the migration once per browser
 const MIGRATION_FLAG_KEY = 'my-day-ai-migrated-v1';
+// sessionStorage key for changes queued during a server outage
+const QUEUED_SAVE_KEY = 'my-day-ai-queued-save';
 
 const QUOTES = [
   "Progress, not perfection.",
@@ -95,12 +98,28 @@ function toLocalState(s: ServerAppState): AppState {
 
 function useAppState() {
   const { data: serverState, isLoading: isServerLoading } = useGetAppState();
-  const { mutate: saveToServer } = useSaveAppState();
+  const { mutateAsync: saveToServerAsync } = useSaveAppState();
 
   const [state, setState] = useState<AppState | null>(null);
   const [notice, setNotice] = useState('');
   const initializedRef = useRef(false);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const queuedToastShownRef = useRef(false);
+
+  // Try to flush any changes that were queued during an outage
+  const flushQueued = useCallback(async () => {
+    const raw = sessionStorage.getItem(QUEUED_SAVE_KEY);
+    if (!raw) return;
+    try {
+      const data = JSON.parse(raw) as ServerAppState;
+      await saveToServerAsync({ data });
+      sessionStorage.removeItem(QUEUED_SAVE_KEY);
+      queuedToastShownRef.current = false;
+      toast({ title: 'Changes synced', description: 'Your queued changes have been saved to the server.' });
+    } catch {
+      // Still offline — will retry on next interval tick or next save attempt
+    }
+  }, [saveToServerAsync]);
 
   // Once we get the server state, initialize local state (with optional migration)
   useEffect(() => {
@@ -114,28 +133,67 @@ function useAppState() {
       if (legacyState) {
         // User had local data — persist it to server, use it as state
         setState(legacyState);
-        saveToServer({ data: legacyState as unknown as ServerAppState });
+        saveToServerAsync({ data: legacyState as unknown as ServerAppState }).catch(() => {
+          sessionStorage.setItem(QUEUED_SAVE_KEY, JSON.stringify(legacyState));
+        });
         initializedRef.current = true;
         return;
       }
     }
 
-    // Normal path: use what the server returned
+    // Normal path: use what the server returned, then flush any queued saves
     setState(toLocalState(serverState));
     initializedRef.current = true;
-  }, [serverState, isServerLoading, saveToServer]);
+    // Server is reachable — attempt to flush any queued changes from a prior outage
+    void flushQueued();
+  }, [serverState, isServerLoading, saveToServerAsync, flushQueued]);
 
-  // Debounced server save on every state change
+  // Retry queued saves every 30 seconds while the tab is open
+  useEffect(() => {
+    const id = setInterval(flushQueued, 30_000);
+    return () => clearInterval(id);
+  }, [flushQueued]);
+
+  // Debounced server save on every state change — with exponential-backoff retry
   useEffect(() => {
     if (!state || !initializedRef.current) return;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(() => {
-      saveToServer({ data: state as unknown as ServerAppState });
+    saveTimerRef.current = setTimeout(async () => {
+      const data = state as unknown as ServerAppState;
+      let saved = false;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          await saveToServerAsync({ data });
+          saved = true;
+          // Clear any queued save — we just successfully wrote the latest state
+          if (sessionStorage.getItem(QUEUED_SAVE_KEY)) {
+            sessionStorage.removeItem(QUEUED_SAVE_KEY);
+            queuedToastShownRef.current = false;
+            toast({ title: 'Changes synced', description: 'Your queued changes have been saved.' });
+          }
+          break;
+        } catch {
+          if (attempt < 3) {
+            // Exponential backoff: 300 ms → 600 ms between attempts
+            await new Promise<void>((resolve) => setTimeout(resolve, 300 * Math.pow(2, attempt - 1)));
+          }
+        }
+      }
+      if (!saved) {
+        sessionStorage.setItem(QUEUED_SAVE_KEY, JSON.stringify(data));
+        if (!queuedToastShownRef.current) {
+          queuedToastShownRef.current = true;
+          toast({
+            title: 'Changes saved locally',
+            description: "Couldn't reach the server. Your changes are queued and will sync automatically.",
+          });
+        }
+      }
     }, 600);
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
-  }, [state, saveToServer]);
+  }, [state, saveToServerAsync]);
 
   // Apply preferences to document
   useEffect(() => {
