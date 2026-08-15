@@ -6,6 +6,8 @@ import {
   type AppState,
   type Task,
   type Capture,
+  type Person,
+  type ConnectionLog,
 } from '@workspace/api-client-react';
 
 // ─────────────────────────────────────────────────────────
@@ -21,6 +23,8 @@ type AppStateContextValue = {
   toggleTask: (id: string) => void;
   addCapture: (text: string) => void;
   deleteCapture: (id: string) => void;
+  addPerson: (person: Omit<Person, 'id' | 'connections'>) => void;
+  logConnection: (id: string) => void;
 };
 
 // ─────────────────────────────────────────────────────────
@@ -28,6 +32,11 @@ type AppStateContextValue = {
 // ─────────────────────────────────────────────────────────
 
 const AppStateContext = createContext<AppStateContextValue | undefined>(undefined);
+
+function localDateKey(date: Date): string {
+  const offset = date.getTimezoneOffset();
+  return new Date(date.getTime() - offset * 60_000).toISOString().slice(0, 10);
+}
 
 // ─────────────────────────────────────────────────────────
 // Provider
@@ -116,6 +125,49 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     [state, optimisticSave],
   );
 
+  const addPerson = useCallback(
+    (person: Omit<Person, 'id' | 'connections'>) => {
+      if (!state) return;
+      const newPerson: Person = {
+        ...person,
+        id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+        connections: [],
+      };
+      optimisticSave({
+        ...state,
+        people: [newPerson, ...(state.people ?? [])],
+      });
+    },
+    [state, optimisticSave],
+  );
+
+  const logConnection = useCallback(
+    (id: string) => {
+      if (!state) return;
+      const person = (state.people ?? []).find((candidate: Person) => candidate.id === id);
+      if (!person) return;
+      const today = localDateKey(new Date());
+      const entry: ConnectionLog = {
+        id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+        date: today,
+        method: person.contactMethod,
+      };
+      optimisticSave({
+        ...state,
+        people: (state.people ?? []).map((candidate: Person) =>
+          candidate.id === id
+            ? {
+                ...candidate,
+                lastConnectedAt: today,
+                connections: [entry, ...(candidate.connections ?? [])],
+              }
+            : candidate,
+        ),
+      });
+    },
+    [state, optimisticSave],
+  );
+
   return (
     <AppStateContext.Provider
       value={{
@@ -127,6 +179,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
         toggleTask,
         addCapture,
         deleteCapture,
+        addPerson,
+        logConnection,
       }}
     >
       {children}

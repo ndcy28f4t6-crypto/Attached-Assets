@@ -24,8 +24,15 @@ async function ensureSchema(): Promise<void> {
     CREATE TABLE IF NOT EXISTS app_state (
       session_id TEXT PRIMARY KEY,
       state      JSONB      NOT NULL,
+      revision   INTEGER    NOT NULL DEFAULT 0,
       updated_at TIMESTAMP  NOT NULL DEFAULT NOW()
     )
+  `);
+  // Older workspaces may already have app_state without the concurrency column.
+  // Keep startup self-healing so existing sessions continue to load.
+  await pool.query(`
+    ALTER TABLE app_state
+    ADD COLUMN IF NOT EXISTS revision INTEGER NOT NULL DEFAULT 0
   `);
 
   // connect-pg-simple session table: keeps sessions alive across API restarts.

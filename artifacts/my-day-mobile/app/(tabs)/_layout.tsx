@@ -25,6 +25,10 @@ function NativeTabLayout() {
         <Icon sf={{ default: 'folder', selected: 'folder.fill' }} />
         <Label>Projects</Label>
       </NativeTabs.Trigger>
+      <NativeTabs.Trigger name="people">
+        <Icon sf={{ default: 'person.2', selected: 'person.2.fill' }} />
+        <Label>People</Label>
+      </NativeTabs.Trigger>
     </NativeTabs>
   );
 }
@@ -103,6 +107,18 @@ function ClassicTabLayout() {
               <SymbolView name="folder" tintColor={color} size={24} />
             ) : (
               <Feather name="folder" size={22} color={color} />
+            ),
+        }}
+      />
+      <Tabs.Screen
+        name="people"
+        options={{
+          title: 'People',
+          tabBarIcon: ({ color }) =>
+            isIOS ? (
+              <SymbolView name="person.2" tintColor={color} size={24} />
+            ) : (
+              <Feather name="users" size={22} color={color} />
             ),
         }}
       />
