@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "My Day AI"
+description = "A responsive personal executive-assistant app that turns daily intentions into a calm, prioritized plan for phone and laptop users."
+version = "1.0.0"
+id = "artifacts/my-day-ai"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 23092
+
+[services.development]
+run = "pnpm --filter @workspace/my-day-ai run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/my-day-ai", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/my-day-ai/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "23092"
+BASE_PATH = "/"
