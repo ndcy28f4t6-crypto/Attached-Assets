@@ -11,6 +11,27 @@ env = { "CI" = "true" }
 [workflows]
 runButton = "Project"
 
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "artifacts/video-marketing: web"
+
+[[workflows.workflow]]
+name = "artifacts/video-marketing: web"
+author = "agent"
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "PORT=23095 BASE_PATH=/__video pnpm --filter @workspace/video-marketing run dev"
+waitForPort = 23095
+
 [agent]
 stack = "PNPM_WORKSPACE"
 expertMode = true

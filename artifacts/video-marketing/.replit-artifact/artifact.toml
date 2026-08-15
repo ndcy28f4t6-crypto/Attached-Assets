@@ -1,0 +1,29 @@
+kind = "video"
+previewPath = "/__video"
+title = "My Day AI Video"
+description = "Animated marketing video for My Day AI"
+version = "1.0.0"
+id = "artifacts/video-marketing"
+router = "path"
+videoAspectRatio = "16:9"
+
+[[services]]
+name = "web"
+paths = [ "/__video" ]
+localPort = 23095
+
+[services.development]
+run = "pnpm --filter @workspace/video-marketing run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/video-marketing", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/video-marketing/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "23095"
+BASE_PATH = "/__video"

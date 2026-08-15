@@ -1,0 +1,33 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Instrument+Serif:ital@0;1&display=swap');
+@import 'tailwindcss';
+
+:root {
+  --color-cream: #f7f3ee;
+  --color-teal: #2d3d3a;
+  --color-coral: #e88870;
+  --color-sage: #8a9a86;
+  --color-dark: #1a1a1a;
+  --color-light: #ffffff;
+
+  --font-display: 'Instrument Serif', serif;
+  --font-body: 'DM Sans', sans-serif;
+}
+
+@theme inline {
+  --color-cream: var(--color-cream);
+  --color-teal: var(--color-teal);
+  --color-coral: var(--color-coral);
+  --color-sage: var(--color-sage);
+  --color-dark: var(--color-dark);
+  --color-light: var(--color-light);
+  --font-display: var(--font-display);
+  --font-body: var(--font-body);
+}
+
+body {
+  font-family: var(--font-body);
+  background-color: var(--color-cream);
+  color: var(--color-dark);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
