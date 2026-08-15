@@ -181,20 +181,22 @@ export const elementAnimations = {
 // Character-level animation variants for kinetic typography
 export const charVariants: Variants = {
   hidden: { opacity: 0, y: 40, rotateX: -40, transformPerspective: 800 },
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   visible: {
     opacity: 1,
     y: 0,
     rotateX: 0,
     transformPerspective: 800,
     transition: { type: 'spring', stiffness: 400, damping: 25 },
-  },
+  } as any,
 };
 
 export const charContainerVariants: Variants = {
   hidden: {},
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   visible: {
     transition: { staggerChildren: 0.03, delayChildren: 0.1 },
-  },
+  } as any,
 };
 
 // Stagger configs
@@ -210,19 +212,21 @@ export const staggerConfigs = {
 // Common variants
 export const containerVariants: Variants = {
   hidden: { opacity: 0 },
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   visible: {
     opacity: 1,
     transition: staggerConfigs.medium,
-  },
+  } as any,
 };
 
 export const itemVariants: Variants = {
   hidden: { opacity: 0, y: 20 },
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   visible: {
     opacity: 1,
     y: 0,
     transition: { duration: 0.5, ease: 'circOut' },
-  },
+  } as any,
 };
 
 // Utilities
