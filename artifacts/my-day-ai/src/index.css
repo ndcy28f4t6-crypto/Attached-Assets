@@ -250,6 +250,8 @@
 .day-cell.selected:not(.today) { outline: 2px solid hsl(var(--primary)); outline-offset: -2px; color: hsl(var(--foreground)); }
 .day-cell.today.selected { outline: 2px solid hsl(var(--primary-foreground) / 0.6); outline-offset: -2px; }
 .day-cell b { display: block; font-size: 13px; margin-top: 5px; }
+.day-event-dot { display: block; width: 5px; height: 5px; border-radius: 50%; background: currentColor; margin: 4px auto 0; opacity: 0.55; }
+.day-cell.today .day-event-dot { background: hsl(var(--primary-foreground)); opacity: 0.7; }
 .calendar-event { margin-top: 18px; padding: 13px; border-radius: 11px; background: hsl(var(--secondary) / .72); border-left: 3px solid hsl(var(--primary)); }
 .calendar-event strong { font-size: 12px; display: block; }
 .calendar-event span { font-size: 11px; color: hsl(var(--muted-foreground)); display: block; margin-top: 4px; }

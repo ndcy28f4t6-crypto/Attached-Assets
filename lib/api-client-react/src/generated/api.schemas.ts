@@ -190,3 +190,12 @@ export type GetCalendarEventsParams = {
 date?: string;
 };
 
+export type GetCalendarWeekSummaryParams = {
+/**
+ * ISO date string (YYYY-MM-DD) for the Monday of the week
+ */
+weekStart: string;
+};
+
+export type GetCalendarWeekSummary200 = {[key: string]: number};
+

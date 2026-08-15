@@ -51,6 +51,16 @@ export const GetCalendarStatusResponse = zod.object({
 
 
 /**
+ * @summary Get event counts per day for a week
+ */
+export const GetCalendarWeekSummaryQueryParams = zod.object({
+  "weekStart": zod.coerce.string().describe('ISO date string (YYYY-MM-DD) for the Monday of the week')
+})
+
+export const GetCalendarWeekSummaryResponse = zod.record(zod.string(), zod.number().int())
+
+
+/**
  * @summary List all calendars the user has access to
  */
 export const GetCalendarListResponseItem = zod.object({

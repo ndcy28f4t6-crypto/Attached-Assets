@@ -67,6 +67,33 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CalendarStatus"
+  /calendar/week-summary:
+    get:
+      operationId: getCalendarWeekSummary
+      tags: [calendar]
+      summary: Get event counts per day for a week
+      parameters:
+        - name: weekStart
+          in: query
+          required: true
+          schema:
+            type: string
+          description: ISO date string (YYYY-MM-DD) for the Monday of the week
+      responses:
+        "200":
+          description: Map of date strings to event counts
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: integer
+        "503":
+          description: Calendar not connected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /calendar/calendars:
     get:
       operationId: getCalendarList

@@ -136,6 +136,103 @@ router.get("/calendar/status", async (_req, res): Promise<void> => {
   }
 });
 
+router.get("/calendar/week-summary", async (req, res): Promise<void> => {
+  try {
+    const connectors = getConnectors();
+    const weekStartParam = typeof req.query["weekStart"] === "string" ? req.query["weekStart"] : null;
+    if (!weekStartParam) {
+      res.status(400).json({ error: "weekStart query parameter is required" });
+      return;
+    }
+
+    // Build the 7-day window
+    const weekStart = new Date(`${weekStartParam}T00:00:00`);
+    const days: string[] = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(weekStart);
+      d.setDate(weekStart.getDate() + i);
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      const dd = String(d.getDate()).padStart(2, "0");
+      days.push(`${y}-${m}-${dd}`);
+    }
+
+    const [googleItems, outlookEntries] = await Promise.all([
+      fetchGoogleCalendarList(connectors),
+      fetchOutlookCalendarList(connectors),
+    ]);
+
+    if (googleItems.length === 0 && outlookEntries.length === 0) {
+      // No calendar connected — return all zeros so UI degrades gracefully
+      const summary: Record<string, number> = {};
+      for (const day of days) summary[day] = 0;
+      res.json(summary);
+      return;
+    }
+
+    const selectedGoogleCals = googleItems.filter((cal) => cal.selected !== false);
+
+    // Fetch all 7 days in parallel across both providers
+    const dayCounts = await Promise.all(
+      days.map(async (dateStr): Promise<number> => {
+        const dayStart = new Date(`${dateStr}T00:00:00`);
+        const dayEnd = new Date(`${dateStr}T23:59:59`);
+        const timeMin = encodeURIComponent(toISOWithOffset(dayStart));
+        const timeMax = encodeURIComponent(toISOWithOffset(dayEnd));
+
+        // Google calendars
+        const googleCounts = await Promise.all(
+          selectedGoogleCals.map(async (cal): Promise<number> => {
+            try {
+              const encodedId = encodeURIComponent(cal.id);
+              const eventsResp = await connectors.proxy(
+                "google-calendar",
+                `/calendar/v3/calendars/${encodedId}/events?timeMin=${timeMin}&timeMax=${timeMax}&singleEvents=true&maxResults=50`,
+                { method: "GET" }
+              );
+              if (!eventsResp.ok) return 0;
+              const data = await eventsResp.json() as { items?: unknown[] };
+              return (data.items ?? []).length;
+            } catch {
+              return 0;
+            }
+          })
+        );
+
+        // Outlook calendars
+        const outlookCounts = await Promise.all(
+          outlookEntries.map(async (cal): Promise<number> => {
+            const rawId = cal.id.slice("outlook::".length);
+            try {
+              const eventsResp = await connectors.proxy(
+                "outlook",
+                `/v1.0/me/calendars/${encodeURIComponent(rawId)}/events?$filter=start/dateTime ge '${dayStart.toISOString()}' and end/dateTime le '${dayEnd.toISOString()}'&$top=50&$select=id`,
+                { method: "GET" }
+              );
+              if (!eventsResp.ok) return 0;
+              const data = await eventsResp.json() as { value?: unknown[] };
+              return (data.value ?? []).length;
+            } catch {
+              return 0;
+            }
+          })
+        );
+
+        return [...googleCounts, ...outlookCounts].reduce((sum, n) => sum + n, 0);
+      })
+    );
+
+    const summary: Record<string, number> = {};
+    for (let i = 0; i < days.length; i++) {
+      summary[days[i]] = dayCounts[i];
+    }
+    res.json(summary);
+  } catch (err) {
+    req.log.error({ err }, "Calendar week-summary error");
+    res.status(503).json({ error: "Calendar not connected or unavailable" });
+  }
+});
+
 router.get("/calendar/calendars", async (req, res): Promise<void> => {
   try {
     const connectors = getConnectors();

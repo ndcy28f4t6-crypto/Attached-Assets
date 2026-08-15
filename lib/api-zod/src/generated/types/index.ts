@@ -16,6 +16,8 @@ export * from './capture';
 export * from './connectionLog';
 export * from './errorResponse';
 export * from './getCalendarEventsParams';
+export * from './getCalendarWeekSummary200';
+export * from './getCalendarWeekSummaryParams';
 export * from './healthStatus';
 export * from './importantDate';
 export * from './person';
