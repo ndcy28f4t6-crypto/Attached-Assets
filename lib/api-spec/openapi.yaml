@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: calendar
+    description: Calendar operations
 paths:
   /healthz:
     get:
@@ -24,6 +26,45 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /calendar/events:
+    get:
+      operationId: getCalendarEvents
+      tags: [calendar]
+      summary: Get calendar events for a date range
+      parameters:
+        - name: date
+          in: query
+          required: false
+          schema:
+            type: string
+          description: ISO date string (YYYY-MM-DD), defaults to today
+      responses:
+        "200":
+          description: List of calendar events
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CalendarEvent"
+        "503":
+          description: Calendar not connected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /calendar/status:
+    get:
+      operationId: getCalendarStatus
+      tags: [calendar]
+      summary: Check if calendar is connected
+      responses:
+        "200":
+          description: Calendar connection status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalendarStatus"
 components:
   schemas:
     HealthStatus:
@@ -33,4 +74,39 @@ components:
           type: string
       required:
         - status
-
+    CalendarEvent:
+      type: object
+      required: [id, title, start, end, allDay]
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        start:
+          type: string
+        end:
+          type: string
+        allDay:
+          type: boolean
+        location:
+          type: ["string", "null"]
+        description:
+          type: ["string", "null"]
+        calendarId:
+          type: string
+        color:
+          type: ["string", "null"]
+    CalendarStatus:
+      type: object
+      required: [connected, provider]
+      properties:
+        connected:
+          type: boolean
+        provider:
+          type: string
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string

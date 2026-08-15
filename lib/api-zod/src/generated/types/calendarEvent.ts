@@ -5,9 +5,6 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-export interface HealthStatus {
-  status: string;
-}
 
 export interface CalendarEvent {
   id: string;
@@ -23,20 +20,3 @@ export interface CalendarEvent {
   /** @nullable */
   color?: string | null;
 }
-
-export interface CalendarStatus {
-  connected: boolean;
-  provider: string;
-}
-
-export interface ErrorResponse {
-  error: string;
-}
-
-export type GetCalendarEventsParams = {
-/**
- * ISO date string (YYYY-MM-DD), defaults to today
- */
-date?: string;
-};
-

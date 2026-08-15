@@ -1,19 +1,43 @@
-import { type ReactNode, useEffect, useMemo, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useState, useRef } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import {
   Archive, ArrowLeft, ArrowRight, Bell, Brain, Calendar, CalendarClock, Check,
-  CheckCircle2, ChevronDown, CircleHelp, ClipboardList, Clock3, Command, Compass,
+  CheckCircle2, ChevronDown, ChevronUp, CircleHelp, ClipboardList, Clock3, Command, Compass,
   Download, FolderKanban, Gauge, Headphones, Home as HomeIcon, Keyboard, Lightbulb, ListChecks,
   Menu, Mic, MoreHorizontal, Moon, Plus, RotateCcw, Search, Settings2, ShieldCheck,
   Sparkles, Sun, Trash2, UserRound, Volume2, WandSparkles, X
 } from 'lucide-react';
 import { Link, Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
+import { useGetCalendarEvents, useGetCalendarStatus } from '@workspace/api-client-react';
 
 const queryClient = new QueryClient();
 const STORAGE_KEY = 'my-day-ai-state-v1';
+
+const QUOTES = [
+  "Progress, not perfection.",
+  "One small step is still movement.",
+  "You don't have to solve everything today.",
+  "Rest is part of the work.",
+  "You've handled hard things before. This is one more.",
+  "Clarity comes from action, not from thinking.",
+  "Done is better than perfect.",
+  "Your best is enough.",
+  "Start anywhere.",
+  "The next step is always smaller than it looks.",
+  "What you tend to grows.",
+  "Momentum starts with a single choice.",
+  "You are more organized than you feel.",
+  "Being overwhelmed is not a character flaw.",
+  "Give yourself the grace you'd give a friend.",
+  "Small wins still count.",
+  "Today doesn't have to be perfect to be good.",
+  "You are capable. Keep going.",
+  "What matters most gets your best energy first.",
+  "It is okay to begin again."
+];
 
 type Task = {
   id: string;
@@ -21,13 +45,15 @@ type Task = {
   project: string;
   due: string;
   time?: string;
+  estTime?: string;
   priority: 'high' | 'medium' | 'low';
   done: boolean;
 };
 type Project = { id: string; name: string; description: string; color: string; goal: string };
 type Capture = { id: string; text: string; createdAt: string; converted: boolean };
-type Preferences = { dark: boolean; accent: string; memory: boolean; reminders: boolean };
-type AppState = { tasks: Task[]; projects: Project[]; captures: Capture[]; preferences: Preferences };
+type Preferences = { dark: boolean; accent: string; memory: boolean; reminders: boolean; sectionOrder: string[]; fontStyle: 'modern' | 'classic' | 'rounded'; calendarConnected: 'none' | 'google' | 'outlook' };
+type WaitingFor = { id: string; person: string; item: string; addedAt: string };
+type AppState = { tasks: Task[]; projects: Project[]; captures: Capture[]; preferences: Preferences; waitingFor: WaitingFor[] };
 
 const seedState: AppState = {
   tasks: [
@@ -41,20 +67,29 @@ const seedState: AppState = {
   projects: [
     { id: 'p1', name: 'Work rhythm', description: 'A clearer week with fewer loose ends.', color: '#e88870', goal: 'Protect two deep-work mornings' },
     { id: 'p2', name: 'Portfolio refresh', description: 'A small, honest collection of recent work.', color: '#a9cbbd', goal: 'Publish the first draft' },
-    { id: 'p3', name: 'Home, gently', description: 'Make the apartment feel easy to return to.', color: '#d9ba83', goal: 'Finish the Sunday reset' },
+    { id: 'p3', name: 'Home, gently', description: 'Make the home feel easy to return to.', color: '#d9ba83', goal: 'Finish the Sunday reset' },
     { id: 'p4', name: 'Personal', description: 'The little things that keep the week kind.', color: '#b7afb9', goal: 'Leave room for real life' },
   ],
   captures: [
     { id: 'c1', text: 'Remember to ask Jo about the intro when I send the proposal.', createdAt: 'Today, 08:42', converted: false },
     { id: 'c2', text: 'I want to make more space for reading without making it another project.', createdAt: 'Yesterday, 20:16', converted: true },
   ],
-  preferences: { dark: false, accent: '#e88870', memory: true, reminders: true },
+  preferences: { dark: false, accent: '#e88870', memory: true, reminders: true, sectionOrder: ['briefing','whatnow','priorities','timeline','capture','quote'], fontStyle: 'modern', calendarConnected: 'none' },
+  waitingFor: []
 };
 
 function readState(): AppState {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) return JSON.parse(saved) as AppState;
+    if (saved) {
+      const parsed = JSON.parse(saved) as AppState;
+      if (!parsed.preferences) parsed.preferences = seedState.preferences;
+      if (!parsed.preferences.sectionOrder) parsed.preferences.sectionOrder = seedState.preferences.sectionOrder;
+      if (!parsed.preferences.fontStyle) parsed.preferences.fontStyle = seedState.preferences.fontStyle;
+      if (!parsed.preferences.calendarConnected) parsed.preferences.calendarConnected = seedState.preferences.calendarConnected;
+      if (!parsed.waitingFor) parsed.waitingFor = [];
+      return parsed;
+    }
   } catch { /* use the welcoming seed when storage is unavailable */ }
   return seedState;
 }
@@ -66,6 +101,13 @@ function useAppState() {
   useEffect(() => {
     document.documentElement.classList.toggle('dark', state.preferences.dark);
     document.documentElement.style.setProperty('--primary', hexToHsl(state.preferences.accent));
+    if (state.preferences.fontStyle === 'classic') {
+      document.documentElement.style.setProperty('--app-font-sans', "'Lora', Georgia, serif");
+    } else if (state.preferences.fontStyle === 'rounded') {
+      document.documentElement.style.setProperty('--app-font-sans', "'Nunito', sans-serif");
+    } else {
+      document.documentElement.style.setProperty('--app-font-sans', "'DM Sans', sans-serif");
+    }
   }, [state.preferences]);
   useEffect(() => {
     if (!notice) return;
@@ -117,7 +159,7 @@ function Shell({ children }: { children: ReactNode }) {
       </nav>
       <div className="sidebar-bottom">
         <Link href="/me" className={`nav-link ${location === '/me' ? 'active' : ''}`} data-testid="link-me"><Settings2 size={17} strokeWidth={1.8} /><span>Me & preferences</span></Link>
-        <div className="mini-profile"><div className="avatar">AR</div><div><strong style={{ display: 'block', fontSize: 12 }}>Alex Rivera</strong><span style={{ color: 'hsl(var(--sidebar-foreground) / .5)', fontSize: 10 }}>A quieter way forward</span></div></div>
+        <div className="mini-profile"><div className="avatar">S</div><div><strong style={{ display: 'block', fontSize: 12 }}>Satin</strong><span style={{ color: 'hsl(var(--sidebar-foreground) / .5)', fontSize: 10 }}>Tell me what matters.</span></div></div>
       </div>
     </aside>
     <div className="workspace">
@@ -134,16 +176,55 @@ function PageHeader({ eyebrow, title, subtitle, action }: { eyebrow: string; tit
   return <header className="page-header"><div><div className="eyebrow">{eyebrow}</div><h1 className="page-title">{title}</h1><p className="page-subtitle">{subtitle}</p></div>{action}</header>;
 }
 
-function TaskRow({ task, onToggle, onDelete, onEdit, onReschedule }: { task: Task; onToggle: () => void; onDelete?: () => void; onEdit?: () => void; onReschedule?: () => void }) {
+function TaskRow({ task, numberBadge, onToggle, onDelete, onEdit, onReschedule }: { task: Task; numberBadge?: number; onToggle: () => void; onDelete?: () => void; onEdit?: () => void; onReschedule?: () => void }) {
   return <div className={`task-row ${task.done ? 'done' : ''}`} data-testid={`row-task-${task.id}`}>
     <input className="check" type="checkbox" checked={task.done} onChange={onToggle} aria-label={`${task.done ? 'Reopen' : 'Complete'} ${task.title}`} data-testid={`checkbox-task-${task.id}`} />
-    <div><div className="task-name">{task.title}</div><div className="task-meta"><span className={`priority-dot ${task.priority}`} /><span>{task.time || task.due}</span><span>·</span><span>{task.project}</span></div></div>
+    <div>
+      <div className="task-name">
+        {numberBadge !== undefined && numberBadge <= 3 && <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 16, height: 16, borderRadius: '50%', background: 'hsl(var(--primary)/0.15)', color: 'hsl(var(--primary))', fontSize: 10, marginRight: 8, fontWeight: 700 }}>{numberBadge}</span>}
+        {task.title}
+      </div>
+      <div className="task-meta"><span className={`priority-dot ${task.priority}`} /><span>{task.time || task.due}</span><span>·</span><span>{task.project}</span></div>
+    </div>
     <div className="task-actions" style={{ display: 'flex', alignItems: 'center', gap: 1 }}>
       {onReschedule && <button className="icon-button" onClick={onReschedule} aria-label={`Reschedule ${task.title}`} data-testid={`button-reschedule-${task.id}`}><CalendarClock size={15} /></button>}
       {onEdit && <button className="icon-button" onClick={onEdit} aria-label={`Edit ${task.title}`} data-testid={`button-edit-${task.id}`}><MoreHorizontal size={16} /></button>}
       {onDelete && <button className="icon-button" onClick={onDelete} aria-label={`Delete ${task.title}`} data-testid={`button-delete-${task.id}`}><Trash2 size={15} /></button>}
     </div>
   </div>;
+}
+
+function WhatNowSection({ remaining, hour }: { remaining: Task[]; hour: number }) {
+  const [open, setOpen] = useState(false);
+  let whatNowText = "";
+  if (remaining.length === 0) {
+    whatNowText = "Everything is handled. A genuine rest is the next step.";
+  } else {
+    const nextTaskTitle = remaining[0].title;
+    if (hour < 12) {
+      whatNowText = `Your clearest thinking is right now. Start with ${nextTaskTitle}.`;
+    } else if (hour < 17) {
+      whatNowText = `You've made it past the midpoint. A focused 25 minutes on ${nextTaskTitle} will carry you through.`;
+    } else {
+      whatNowText = `Wind down deliberately. One small task — ${nextTaskTitle} — then protect your evening.`;
+    }
+  }
+
+  return (
+    <section key="whatnow">
+      {open ? (
+        <div className="card" style={{ padding: 22, border: '2px solid hsl(var(--primary))' }}>
+          <h2 style={{ fontSize: 16, marginBottom: 8 }}>Right now</h2>
+          <p style={{ color: 'hsl(var(--foreground))', fontSize: 14, lineHeight: 1.5 }}>{whatNowText}</p>
+          <button className="button button-ghost" style={{ marginTop: 12, minHeight: 36, padding: '0 12px' }} onClick={() => setOpen(false)}>Close</button>
+        </div>
+      ) : (
+        <button className="button button-secondary" style={{ width: '100%', minHeight: 56, fontSize: 15, borderRadius: 16, background: 'hsl(var(--primary))', color: 'hsl(var(--primary-foreground))' }} onClick={() => setOpen(true)}>
+          What should I do right now?
+        </button>
+      )}
+    </section>
+  );
 }
 
 function Home({ app }: { app: ReturnType<typeof useAppState> }) {
@@ -153,27 +234,65 @@ function Home({ app }: { app: ReturnType<typeof useAppState> }) {
   const remaining = state.tasks.filter((task) => !task.done && task.due === 'Today');
   const next = remaining[0];
   const completed = state.tasks.filter((task) => task.done).length;
+  
+  const hour = new Date().getHours();
+  let greeting = "Good evening";
+  if (hour < 12) greeting = "Good morning";
+  else if (hour < 17) greeting = "Good afternoon";
+
   const submitCapture = () => {
     if (!captureText.trim()) return;
     app.addCapture(captureText.trim());
     setCaptureText('');
     setNotice('Held onto that thought.');
   };
-  if (overwhelmed) return <div className="page-wrap"><PageHeader eyebrow="A softer view" title={<>One thing, <span className="serif">for now.</span></>} subtitle="The rest can wait. You do not need to solve the whole day at once." action={<button className="button button-secondary" onClick={() => setOverwhelmed(false)} data-testid="button-return-normal"><ArrowLeft size={15} /> Return to my day</button>} /><div className="card overwhelm-card" style={{ maxWidth: 650, minHeight: 360, margin: '10vh auto 0' }}><div><div className="eyebrow">Your next gentle step</div><h2>{next ? next.title : 'The day is already held.'}</h2><p>{next ? 'Give this one small thing your attention. Everything else is allowed to be background noise.' : 'You have moved through today’s list. A pause is a perfectly good next step.'}</p></div><div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>{next && <button className="button button-primary" onClick={() => { toggleTask(next.id); setNotice('That is enough for now.'); }} data-testid="button-complete-next"><Check size={15} /> Mark it complete</button>}<button className="button" style={{ background: 'hsl(var(--sidebar-foreground) / .12)', color: 'inherit' }} onClick={() => setOverwhelmed(false)} data-testid="button-see-day">See my full day</button></div></div></div>;
+
+  if (overwhelmed) return <div className="page-wrap"><PageHeader eyebrow="A softer view" title={<>One thing, <span className="serif">Satin.</span></>} subtitle="You don't have to handle everything. Just this one." action={<button className="button button-secondary" onClick={() => setOverwhelmed(false)} data-testid="button-return-normal"><ArrowLeft size={15} /> Return to my day</button>} /><div className="card overwhelm-card" style={{ maxWidth: 650, minHeight: 360, margin: '10vh auto 0' }}><div><div className="eyebrow">Your next gentle step</div><h2>{next ? next.title : 'The day is already held.'}</h2><p>{next ? "That's it. The rest is background noise for now." : "You have moved through today’s list. A pause is a perfectly good next step."}</p></div><div><div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>{next && <button className="button button-primary" onClick={() => { toggleTask(next.id); setNotice('That is enough for now.'); }} data-testid="button-complete-next"><Check size={15} /> Mark it complete</button>}<button className="button" style={{ background: 'hsl(var(--sidebar-foreground) / .12)', color: 'inherit' }} onClick={() => setOverwhelmed(false)} data-testid="button-see-day">See my full day</button></div><div style={{ marginTop: 40, borderTop: '1px solid hsl(var(--border))', paddingTop: 20 }}><p style={{ fontStyle: 'italic', color: 'hsl(var(--muted-foreground))', fontSize: 13 }}>"{QUOTES[Math.floor(Math.random() * QUOTES.length)]}"</p></div></div></div></div>;
+
+  const renderSection = (name: string) => {
+    if (name === 'briefing') return (
+      <section key="briefing" className="card briefing" data-testid="card-ai-briefing"><div className="briefing-top"><div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><span className="status-dot" /><span className="eyebrow" style={{ color: 'hsl(var(--muted-foreground))' }}>Your morning briefing</span></div><Sparkles size={18} color="hsl(var(--primary))" /></div><h2>You have a clear first move, and a little room after it.</h2><p>Start with Maya’s proposal while your thinking is fresh. The booking can follow. I’ve kept the afternoon lighter so the portfolio work does not become another mountain.</p><div className="briefing-actions"><Link href="/plan" className="button button-primary" data-testid="link-open-plan"><Calendar size={15} /> Open today’s plan</Link><Link href="/capture" className="button button-ghost" data-testid="link-open-capture"><Plus size={15} /> Add a thought</Link></div></section>
+    );
+    if (name === 'whatnow') return <WhatNowSection key="whatnow" remaining={remaining} hour={hour} />;
+    if (name === 'priorities') {
+      const showBanner = remaining.length > 5;
+      return (
+        <section key="priorities"><div className="section-title"><h2>Worth your attention</h2><span>{completed} complete</span></div>{showBanner && <div className="card" style={{ padding: '14px 18px', marginBottom: 16, background: 'hsl(var(--primary)/0.1)', borderColor: 'hsl(var(--primary)/0.2)' }}><p style={{ fontSize: 13, margin: 0, color: 'hsl(var(--foreground))' }}>You have {remaining.length} things on your list. You realistically have time for 5 today. Here's what I'd prioritize.</p></div>}<div className="task-list">{remaining.slice(0, 5).map((task, idx) => <TaskRow key={task.id} task={task} numberBadge={idx + 1} onToggle={() => toggleTask(task.id)} onDelete={() => { removeTask(task.id); setNotice('Task removed.'); }} onReschedule={() => { update((s) => ({ ...s, tasks: s.tasks.map((t) => t.id === task.id ? { ...t, due: 'Tomorrow', time: undefined } : t) })); setNotice('Moved to tomorrow.'); }} />)}{remaining.length === 0 && <div className="empty-state"><CheckCircle2 size={23} /><div>Today is clear enough. Notice how that feels.</div><Link href="/plan" className="button button-secondary" style={{ marginTop: 15 }} data-testid="link-review-completed">Review the plan</Link></div>}</div></section>
+      );
+    }
+    if (name === 'capture') return (
+      <section key="capture" className="card capture-box"><div className="section-title"><h2>Put it somewhere safe</h2><span>Nothing gets lost here</span></div><textarea className="capture-input" placeholder="A thought, a worry, a thing to remember…" value={captureText} onChange={(event) => setCaptureText(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) submitCapture(); }} aria-label="Quick capture" data-testid="textarea-quick-capture" /><div className="capture-footer"><span style={{ color: 'hsl(var(--muted-foreground))', fontSize: 10 }}><Command size={12} style={{ verticalAlign: 'middle' }} /> + Enter to save</span><button className="button button-primary" onClick={submitCapture} disabled={!captureText.trim()} data-testid="button-save-capture">Hold onto it <ArrowRight size={14} /></button></div></section>
+    );
+    if (name === 'timeline') return (
+      <section key="timeline" className="card timeline"><div className="section-title"><h2>Your shape of today</h2><span>Local time</span></div><div>{[['09:30', 'Send the revised proposal', 'Work rhythm'], ['11:00', 'Book a quiet place', 'Personal'], ['14:00', 'Portfolio notes', 'Portfolio refresh'], ['18:30', 'A walk before dinner', 'Personal']].map(([time, title, project], index) => <div className="timeline-item" key={title}><div className="timeline-time">{time}</div><div className="timeline-track"><span className="timeline-node" /><span className="timeline-line" /></div><div className="timeline-copy"><strong>{title}</strong><p>{project}</p></div></div>)}</div></section>
+    );
+    if (name === 'quote') {
+      const dayOfYear = Math.floor((Date.now() - new Date(new Date().getFullYear(), 0, 0).getTime()) / 86400000);
+      const dailyQuote = QUOTES[dayOfYear % QUOTES.length];
+      return (
+        <section key="quote" className="soft-card" style={{ padding: 24, position: 'relative' }}><div style={{ fontSize: 60, fontFamily: 'var(--app-font-serif)', color: 'hsl(var(--primary))', opacity: 0.2, position: 'absolute', top: -5, left: 16, lineHeight: 1 }}>"</div><p style={{ position: 'relative', zIndex: 1, fontSize: 16, fontFamily: 'var(--app-font-serif)', lineHeight: 1.4, margin: '10px 0 0', fontStyle: 'italic' }}>{dailyQuote}</p></section>
+      );
+    }
+    return null;
+  };
+
+  const leftNames = state.preferences.sectionOrder.filter(n => ['briefing', 'whatnow', 'priorities', 'capture'].includes(n));
+  const rightNames = state.preferences.sectionOrder.filter(n => ['timeline', 'quote'].includes(n));
+
   return <div className="page-wrap">
-    <PageHeader eyebrow="Thursday, 24 October" title={<>Good morning, <span className="serif">Alex.</span></>} subtitle={`${remaining.length} things worth your attention today. We can make room for them.`} action={<button className="button button-secondary" onClick={() => setOverwhelmed(true)} data-testid="button-overwhelmed"><CircleHelp size={15} /> I’m overwhelmed</button>} />
+    <PageHeader eyebrow={`Thursday, 24 October`} title={<>{greeting}, <span className="serif">Satin.</span></>} subtitle={`${remaining.length} things worth your attention today. We can make room for them.`} action={<button className="button button-secondary" onClick={() => setOverwhelmed(true)} data-testid="button-overwhelmed"><CircleHelp size={15} /> I’m overwhelmed</button>} />
     <div className="grid-home">
       <div className="stack">
-        <section className="card briefing" data-testid="card-ai-briefing"><div className="briefing-top"><div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><span className="status-dot" /><span className="eyebrow" style={{ color: 'hsl(var(--muted-foreground))' }}>Your morning briefing</span></div><Sparkles size={18} color="hsl(var(--primary))" /></div><h2>You have a clear first move, and a little room after it.</h2><p>Start with Maya’s proposal while your thinking is fresh. The booking can follow. I’ve kept the afternoon lighter so the portfolio work does not become another mountain.</p><div className="briefing-actions"><Link href="/plan" className="button button-primary" data-testid="link-open-plan"><Calendar size={15} /> Open today’s plan</Link><Link href="/capture" className="button button-ghost" data-testid="link-open-capture"><Plus size={15} /> Add a thought</Link></div></section>
-        <section><div className="section-title"><h2>Worth your attention</h2><span>{completed} complete</span></div><div className="task-list">{remaining.slice(0, 3).map((task) => <TaskRow key={task.id} task={task} onToggle={() => toggleTask(task.id)} onDelete={() => { removeTask(task.id); setNotice('Task removed.'); }} onReschedule={() => { update((s) => ({ ...s, tasks: s.tasks.map((t) => t.id === task.id ? { ...t, due: 'Tomorrow', time: undefined } : t) })); setNotice('Moved to tomorrow.'); }} />)}{remaining.length === 0 && <div className="empty-state"><CheckCircle2 size={23} /><div>Today is clear enough. Notice how that feels.</div><Link href="/plan" className="button button-secondary" style={{ marginTop: 15 }} data-testid="link-review-completed">Review the plan</Link></div>}</div></section>
-        <section className="card capture-box"><div className="section-title"><h2>Put it somewhere safe</h2><span>Nothing gets lost here</span></div><textarea className="capture-input" placeholder="A thought, a worry, a thing to remember…" value={captureText} onChange={(event) => setCaptureText(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) submitCapture(); }} aria-label="Quick capture" data-testid="textarea-quick-capture" /><div className="capture-footer"><span style={{ color: 'hsl(var(--muted-foreground))', fontSize: 10 }}><Command size={12} style={{ verticalAlign: 'middle' }} /> + Enter to save</span><button className="button button-primary" onClick={submitCapture} disabled={!captureText.trim()} data-testid="button-save-capture">Hold onto it <ArrowRight size={14} /></button></div></section>
+        {leftNames.map(renderSection)}
       </div>
       <div className="stack">
         <section className="card overwhelm-card"><div><div className="eyebrow">When the list feels loud</div><h2>Let’s make it smaller.</h2><p>There is no prize for carrying every open loop at the same time.</p><div className="next-step"><span>Try this next</span><strong>{next?.title || 'Take a real pause'}</strong></div></div><button className="button" style={{ background: 'hsl(var(--sidebar-foreground) / .12)', color: 'inherit', width: 'fit-content' }} onClick={() => setOverwhelmed(true)} data-testid="button-simplify-day"><WandSparkles size={15} /> Simplify my day</button></section>
-        <section className="card timeline"><div className="section-title"><h2>Your shape of today</h2><span>Local time</span></div><div>{[['09:30', 'Send the revised proposal', 'Work rhythm'], ['11:00', 'Book a quiet place', 'Personal'], ['14:00', 'Portfolio notes', 'Portfolio refresh'], ['18:30', 'A walk before dinner', 'Personal']].map(([time, title, project], index) => <div className="timeline-item" key={title}><div className="timeline-time">{time}</div><div className="timeline-track"><span className="timeline-node" /><span className="timeline-line" /></div><div className="timeline-copy"><strong>{title}</strong><p>{project}</p></div></div>)}</div></section>
-        <section className="soft-card" style={{ padding: 19 }}><div style={{ display: 'flex', gap: 11, alignItems: 'flex-start' }}><Lightbulb size={17} color="hsl(var(--primary))" /><div><strong style={{ fontSize: 12 }}>A small observation</strong><p style={{ fontSize: 11, lineHeight: 1.55, color: 'hsl(var(--muted-foreground))', margin: '6px 0 0' }}>Your best work is already protected at 9:30. Everything after that is allowed to be smaller.</p></div></div></section>
+        {rightNames.map(renderSection)}
       </div>
     </div>
+    <Link href="/capture" className="floating-mic" aria-label="Voice capture">
+      <Mic size={24} color="hsl(var(--primary-foreground))" />
+    </Link>
   </div>;
 }
 
@@ -182,8 +301,9 @@ function TaskModal({ initial, onClose, onSave }: { initial?: Task; onClose: () =
   const [project, setProject] = useState(initial?.project || 'Personal');
   const [due, setDue] = useState(initial?.due || 'Today');
   const [time, setTime] = useState(initial?.time || '');
+  const [estTime, setEstTime] = useState(initial?.estTime || '15 min');
   const [priority, setPriority] = useState<Task['priority']>(initial?.priority || 'medium');
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose(); }}><div className="modal" role="dialog" aria-modal="true" aria-labelledby="task-modal-title"><div className="modal-head"><h2 id="task-modal-title">{initial ? 'Shape this task' : 'Add a task'}</h2><button className="icon-button" onClick={onClose} aria-label="Close task form" data-testid="button-close-task-form"><X size={18} /></button></div><form className="form-stack" onSubmit={(event) => { event.preventDefault(); if (title.trim()) onSave({ title: title.trim(), project, due, time: time || undefined, priority }); }}><div><label className="field-label" htmlFor="task-title">What needs doing?</label><input id="task-title" autoFocus className="field" value={title} onChange={(event) => setTitle(event.target.value)} data-testid="input-task-title" /></div><div><label className="field-label" htmlFor="task-project">Area</label><input id="task-project" className="field" value={project} onChange={(event) => setProject(event.target.value)} data-testid="input-task-project" /></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}><div><label className="field-label" htmlFor="task-due">When</label><select id="task-due" className="field" value={due} onChange={(event) => setDue(event.target.value)} data-testid="select-task-due"><option>Today</option><option>Tomorrow</option><option>Friday</option><option>Someday</option></select></div><div><label className="field-label" htmlFor="task-time">Time <span style={{ fontWeight: 400 }}>(optional)</span></label><input id="task-time" type="time" className="field" value={time} onChange={(event) => setTime(event.target.value)} data-testid="input-task-time" /></div></div><div><label className="field-label" htmlFor="task-priority">Energy required</label><select id="task-priority" className="field" value={priority} onChange={(event) => setPriority(event.target.value as Task['priority'])} data-testid="select-task-priority"><option value="high">High focus</option><option value="medium">Some focus</option><option value="low">Low lift</option></select></div><div className="form-actions"><button type="button" className="button button-ghost" onClick={onClose} data-testid="button-cancel-task">Cancel</button><button className="button button-primary" type="submit" data-testid="button-save-task">{initial ? 'Save changes' : 'Add to plan'}</button></div></form></div></div>;
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose(); }}><div className="modal" role="dialog" aria-modal="true" aria-labelledby="task-modal-title"><div className="modal-head"><h2 id="task-modal-title">{initial ? 'Shape this task' : 'Add a task'}</h2><button className="icon-button" onClick={onClose} aria-label="Close task form" data-testid="button-close-task-form"><X size={18} /></button></div><form className="form-stack" onSubmit={(event) => { event.preventDefault(); if (title.trim()) onSave({ title: title.trim(), project, due, time: time || undefined, estTime, priority }); }}><div><label className="field-label" htmlFor="task-title">What needs doing?</label><input id="task-title" autoFocus className="field" value={title} onChange={(event) => setTitle(event.target.value)} data-testid="input-task-title" /></div><div><label className="field-label" htmlFor="task-project">Area</label><input id="task-project" className="field" value={project} onChange={(event) => setProject(event.target.value)} data-testid="input-task-project" /></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}><div><label className="field-label" htmlFor="task-due">When</label><select id="task-due" className="field" value={due} onChange={(event) => setDue(event.target.value)} data-testid="select-task-due"><option>Today</option><option>Tomorrow</option><option>Friday</option><option>Someday</option></select></div><div><label className="field-label" htmlFor="task-time">Time <span style={{ fontWeight: 400 }}>(optional)</span></label><input id="task-time" type="time" className="field" value={time} onChange={(event) => setTime(event.target.value)} data-testid="input-task-time" /></div></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}><div><label className="field-label" htmlFor="task-estTime">Estimated time</label><select id="task-estTime" className="field" value={estTime} onChange={(event) => setEstTime(event.target.value)} data-testid="select-task-est-time"><option>5 min</option><option>15 min</option><option>30 min</option><option>1 hour</option><option>2+ hours</option></select></div><div><label className="field-label" htmlFor="task-priority">Energy level</label><select id="task-priority" className="field" value={priority} onChange={(event) => setPriority(event.target.value as Task['priority'])} data-testid="select-task-priority"><option value="high">High focus</option><option value="medium">Medium focus</option><option value="low">Low focus</option></select></div></div><div className="form-actions"><button type="button" className="button button-ghost" onClick={onClose} data-testid="button-cancel-task">Cancel</button><button className="button button-primary" type="submit" data-testid="button-save-task">{initial ? 'Save changes' : 'Add to plan'}</button></div></form></div></div>;
 }
 
 function Plan({ app }: { app: ReturnType<typeof useAppState> }) {
@@ -191,12 +311,45 @@ function Plan({ app }: { app: ReturnType<typeof useAppState> }) {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState('All');
   const [modal, setModal] = useState<{ open: boolean; task?: Task }>({ open: false });
+
+  // Real Google Calendar data
+  const today = new Date().toISOString().slice(0, 10);
+  const { data: calendarEvents, isLoading: calEventsLoading } = useGetCalendarEvents({ date: today });
+  const { data: calendarStatus } = useGetCalendarStatus();
+
+  // Auto-mark calendar as connected when the API confirms it
+  useEffect(() => {
+    if (calendarStatus && (calendarStatus as { connected: boolean }).connected && state.preferences.calendarConnected === 'none') {
+      update(s => ({ ...s, preferences: { ...s.preferences, calendarConnected: 'google' as const } }));
+    }
+  }, [calendarStatus]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [waitingName, setWaitingName] = useState('');
+  const [waitingItem, setWaitingItem] = useState('');
+
   const visible = state.tasks.filter((task) => (filter === 'All' || task.due === filter || (filter === 'Open' && !task.done) || (filter === 'Done' && task.done)) && task.title.toLowerCase().includes(query.toLowerCase()));
+  
   const saveTask = (data: Omit<Task, 'id' | 'done'>) => {
     if (modal.task) editTask(modal.task.id, data); else addTask(data);
     setModal({ open: false }); setNotice(modal.task ? 'Task updated.' : 'Added to your plan.');
   };
-  return <div className="page-wrap"><PageHeader eyebrow="The week, in view" title={<>Make a plan that <span className="serif">breathes.</span></>} subtitle="A flexible shape for the things you want to move forward." action={<button className="button button-primary" onClick={() => setModal({ open: true })} data-testid="button-add-task"><Plus size={16} /> Add task</button>} /><div className="plan-toolbar"><div className="search-field"><Search size={15} /><input className="field" type="search" placeholder="Find a task…" value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Search tasks" data-testid="input-search-tasks" /></div><select className="field select-field" value={filter} onChange={(event) => setFilter(event.target.value)} aria-label="Filter tasks" data-testid="select-filter-tasks"><option>All</option><option>Open</option><option>Done</option><option>Today</option><option>Tomorrow</option></select><button className="button button-secondary" onClick={() => setModal({ open: true })} data-testid="button-add-task-toolbar"><Plus size={15} /> New task</button></div><div className="plan-grid"><section><div className="section-title"><h2>{filter === 'All' ? 'All open loops' : `${filter} tasks`}</h2><span>{visible.length} {visible.length === 1 ? 'task' : 'tasks'}</span></div><div className="task-list">{visible.map((task) => <TaskRow key={task.id} task={task} onToggle={() => { toggleTask(task.id); setNotice(task.done ? 'Back on the list.' : 'Nice. One less thing to carry.'); }} onDelete={() => { removeTask(task.id); setNotice('Task removed.'); }} onEdit={() => setModal({ open: true, task })} onReschedule={() => { update((s) => ({ ...s, tasks: s.tasks.map((t) => t.id === task.id ? { ...t, due: t.due === 'Today' ? 'Tomorrow' : 'Today' } : t) })); setNotice(task.due === 'Today' ? 'Moved to tomorrow.' : 'Brought back to today.'); }} />)}{visible.length === 0 && <div className="empty-state"><Search size={22} /><div>No tasks match that view.</div><button className="button button-ghost" onClick={() => { setQuery(''); setFilter('All'); }} data-testid="button-clear-task-filter">Clear filters</button></div>}</div></section><aside className="stack"><section className="card calendar-card"><div className="calendar-head"><button className="icon-button" onClick={() => setNotice('The previous week is tucked away for now.')} aria-label="Previous week" data-testid="button-previous-week"><ArrowLeft size={16} /></button><strong>October 2024</strong><button className="icon-button" onClick={() => setNotice('The next week can wait until this one is shaped.')} aria-label="Next week" data-testid="button-next-week"><ArrowRight size={16} /></button></div><div className="week-grid">{['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((day, index) => <div className={`day-cell ${index === 3 ? 'today' : ''}`} key={`${day}-${index}`}><span>{day}</span><b>{21 + index}</b></div>)}</div><div className="calendar-event"><strong>Deep work morning</strong><span>Today · 09:00 — 11:00</span></div><div className="calendar-event" style={{ borderLeftColor: 'hsl(var(--accent-foreground))' }}><strong>Leave the afternoon open</strong><span>Today · 15:30 onward</span></div></section><section className="soft-card" style={{ padding: 19 }}><div className="section-title"><h2>Today’s capacity</h2><Gauge size={17} color="hsl(var(--primary))" /></div><div className="progress-bar"><div className="progress-fill" style={{ width: `${Math.min(100, (state.tasks.filter((t) => t.done).length / Math.max(1, state.tasks.length)) * 100)}%` }} /></div><p style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', lineHeight: 1.5, marginBottom: 0 }}>Leave a little margin. A plan is useful when life can still happen inside it.</p></section></aside></div>{modal.open && <TaskModal initial={modal.task} onClose={() => setModal({ open: false })} onSave={saveTask} />}</div>;
+
+  const addWaiting = () => {
+    if (!waitingName.trim() || !waitingItem.trim()) return;
+    app.update(s => ({
+      ...s,
+      waitingFor: [...(s.waitingFor || []), { id: `w${Date.now()}`, person: waitingName.trim(), item: waitingItem.trim(), addedAt: new Date().toISOString() }]
+    }));
+    setWaitingName('');
+    setWaitingItem('');
+    setNotice('Added to Waiting For.');
+  };
+
+  const removeWaiting = (id: string) => {
+    app.update(s => ({ ...s, waitingFor: s.waitingFor.filter(w => w.id !== id) }));
+  };
+
+  return <div className="page-wrap"><PageHeader eyebrow="The week, in view" title={<>Make a plan that <span className="serif">breathes.</span></>} subtitle="A flexible shape for the things you want to move forward." action={<button className="button button-primary" onClick={() => setModal({ open: true })} data-testid="button-add-task"><Plus size={16} /> Add task</button>} /><div className="plan-toolbar"><div className="search-field"><Search size={15} /><input className="field" type="search" placeholder="Find a task…" value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Search tasks" data-testid="input-search-tasks" /></div><select className="field select-field" value={filter} onChange={(event) => setFilter(event.target.value)} aria-label="Filter tasks" data-testid="select-filter-tasks"><option>All</option><option>Open</option><option>Done</option><option>Today</option><option>Tomorrow</option></select><button className="button button-secondary" onClick={() => setModal({ open: true })} data-testid="button-add-task-toolbar"><Plus size={15} /> New task</button></div><div className="plan-grid"><section><div className="section-title"><h2>{filter === 'All' ? 'All open loops' : `${filter} tasks`}</h2><span>{visible.length} {visible.length === 1 ? 'task' : 'tasks'}</span></div><div className="task-list">{visible.map((task) => <TaskRow key={task.id} task={task} onToggle={() => { toggleTask(task.id); setNotice(task.done ? 'Back on the list.' : 'Nice. One less thing to carry.'); }} onDelete={() => { removeTask(task.id); setNotice('Task removed.'); }} onEdit={() => setModal({ open: true, task })} onReschedule={() => { update((s) => ({ ...s, tasks: s.tasks.map((t) => t.id === task.id ? { ...t, due: t.due === 'Today' ? 'Tomorrow' : 'Today' } : t) })); setNotice(task.due === 'Today' ? 'Moved to tomorrow.' : 'Brought back to today.'); }} />)}{visible.length === 0 && <div className="empty-state"><Search size={22} /><div>No tasks match that view.</div><button className="button button-ghost" onClick={() => { setQuery(''); setFilter('All'); }} data-testid="button-clear-task-filter">Clear filters</button></div>}</div>
+      <div style={{ marginTop: 40 }}><div className="section-title"><h2>Waiting For</h2><span>Keep track of dependencies</span></div><div className="task-list">{(state.waitingFor || []).map(w => <div key={w.id} className="task-row" style={{ gridTemplateColumns: '1fr auto', padding: '12px 16px' }}><div><strong style={{ fontSize: 13, display: 'block' }}>{w.person}</strong><span style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', display: 'block', marginTop: 2 }}>{w.item}</span></div><button className="icon-button" onClick={() => removeWaiting(w.id)}><Check size={16} /></button></div>)}<div className="task-row" style={{ gridTemplateColumns: '1fr 1.5fr auto', padding: '8px 12px', gap: 8, background: 'transparent' }}><input className="field" placeholder="Who?" value={waitingName} onChange={e => setWaitingName(e.target.value)} /><input className="field" placeholder="Waiting for what?" value={waitingItem} onChange={e => setWaitingItem(e.target.value)} onKeyDown={e => e.key === 'Enter' && addWaiting()} /><button className="button button-primary" style={{ minHeight: 36, padding: '0 12px' }} onClick={addWaiting}><Plus size={16} /></button></div></div></div></section><aside className="stack"><section className="card calendar-card"><div className="calendar-head"><button className="icon-button" onClick={() => setNotice('The previous week is tucked away for now.')} aria-label="Previous week" data-testid="button-previous-week"><ArrowLeft size={16} /></button><strong>October 2024</strong><button className="icon-button" onClick={() => setNotice('The next week can wait until this one is shaped.')} aria-label="Next week" data-testid="button-next-week"><ArrowRight size={16} /></button></div><div className="week-grid">{['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((day, index) => <div className={`day-cell ${index === 3 ? 'today' : ''}`} key={`${day}-${index}`}><span>{day}</span><b>{21 + index}</b></div>)}</div>{calEventsLoading && <div style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', padding: '8px 0' }}>Loading calendar…</div>}{!calEventsLoading && calendarEvents && (calendarEvents as Array<{ id: string; title: string; start: string; end: string; allDay: boolean }>).length === 0 && <div style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', padding: '8px 0' }}>No events today.</div>}{!calEventsLoading && calendarEvents && (calendarEvents as Array<{ id: string; title: string; start: string; end: string; allDay: boolean }>).map((ev, i) => { const startTime = ev.allDay ? 'All day' : new Date(ev.start).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); const endTime = ev.allDay ? '' : new Date(ev.end).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); return <div className="calendar-event" key={ev.id} style={{ borderLeftColor: i % 2 === 0 ? 'hsl(var(--primary))' : 'hsl(var(--accent-foreground))' }}><strong>{ev.title}</strong><span>Today · {startTime}{endTime && !ev.allDay ? ` — ${endTime}` : ''}</span></div>; })}{!calEventsLoading && !calendarEvents && <div style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', padding: '8px 0' }}>Could not load calendar events.</div>}</section><section className="card calendar-card"><div className="section-title"><h2>Connected services</h2></div>{state.preferences.calendarConnected === 'none' ? (<div style={{ display: 'flex', gap: 10, flexDirection: 'column' }}><button className="button button-ghost" style={{ justifyContent: 'flex-start', border: '1px solid hsl(var(--border))' }} onClick={() => setNotice('Calendar connection requires authorization. Use the Me tab to connect after authorizing.')}><Calendar size={16} /> Google Calendar</button><button className="button button-ghost" style={{ justifyContent: 'flex-start', border: '1px solid hsl(var(--border))' }} onClick={() => setNotice('Calendar connection requires authorization. Use the Me tab to connect after authorizing.')}><Calendar size={16} /> Microsoft Outlook</button></div>) : (<div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 12, background: 'hsl(var(--secondary)/0.5)', borderRadius: 12 }}><div style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981' }} /><span style={{ fontSize: 13, fontWeight: 500 }}>Calendar connected</span><span style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', marginLeft: 'auto', textTransform: 'capitalize' }}>{state.preferences.calendarConnected}</span></div>)}</section><section className="soft-card" style={{ padding: 19 }}><div className="section-title"><h2>Today’s capacity</h2><Gauge size={17} color="hsl(var(--primary))" /></div><div className="progress-bar"><div className="progress-fill" style={{ width: `${Math.min(100, (state.tasks.filter((t) => t.done).length / Math.max(1, state.tasks.length)) * 100)}%` }} /></div><p style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', lineHeight: 1.5, marginBottom: 0 }}>Leave a little margin. A plan is useful when life can still happen inside it.</p></section></aside></div>{modal.open && <TaskModal initial={modal.task} onClose={() => setModal({ open: false })} onSave={saveTask} />}</div>;
 }
 
 function Projects({ app }: { app: ReturnType<typeof useAppState> }) {
@@ -229,16 +382,66 @@ function CapturePage({ app }: { app: ReturnType<typeof useAppState> }) {
   const [reply, setReply] = useState('');
   const [listening, setListening] = useState(false);
   const [removedParts, setRemovedParts] = useState<string[]>([]);
+  const textAreaRef = useRef<HTMLTextAreaElement>(null);
   const parts = useMemo(() => breakdownText(text).filter((part) => !removedParts.includes(part)), [text, removedParts]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      textAreaRef.current?.focus();
+    }, 200);
+    return () => clearTimeout(timer);
+  }, []);
+
   const save = () => { if (!text.trim()) return; addCapture(text.trim()); setReply(assistantReply(text)); setRemovedParts([]); setNotice('Thought captured.'); };
   const convert = () => { parts.forEach((part) => addTask({ title: part, project: 'Personal', due: 'Today', priority: 'medium' })); update((s) => ({ ...s, captures: s.captures.map((capture, index) => index === 0 ? { ...capture, converted: true } : capture) })); setNotice(`${parts.length} small steps added to your plan.`); };
-  return <div className="page-wrap"><div className="capture-page"><PageHeader eyebrow="No sorting required" title={<>Say it before you <span className="serif">lose it.</span></>} subtitle="A private landing place for the thought circling your head." /><section className="card capture-box"><textarea className="capture-input" autoFocus placeholder="What’s taking up a little too much room in your mind?" value={text} onChange={(event) => { setText(event.target.value); setReply(''); setRemovedParts([]); }} aria-label="Brain dump" data-testid="textarea-brain-dump" /><div className="capture-footer"><button className={`voice-button ${listening ? 'listening' : ''}`} onClick={() => { setListening(!listening); setNotice(listening ? 'Voice capture paused.' : 'Voice capture is a visual affordance for now.'); }} aria-label={listening ? 'Stop voice capture' : 'Start voice-style capture'} data-testid="button-voice-capture">{listening ? <Volume2 size={16} /> : <Mic size={16} />}</button><button className="button button-primary" onClick={save} disabled={!text.trim()} data-testid="button-capture-thought"><Sparkles size={15} /> Make sense of this</button></div></section>{reply && <div className="assistant-note" data-testid="text-assistant-response"><div className="assistant-symbol"><Sparkles size={14} /></div><p>{reply}<br /><span style={{ display: 'block', marginTop: 6, color: 'hsl(var(--muted-foreground))', fontSize: 11 }}>This is a small built-in reflection based on your words, not a connected external AI service.</span></p></div>}{reply && parts.length > 0 && <section className="card breakdown"><div className="section-title"><h2>Possible small steps</h2><span>Nothing is committed yet</span></div>{parts.map((part, index) => <div className="breakdown-row" key={`${part}-${index}`}><span className="priority-dot" /><span style={{ flex: 1 }}>{part}</span><button className="icon-button" onClick={() => setRemovedParts((current) => [...current, part])} aria-label={`Remove suggested step ${index + 1}`} data-testid={`button-remove-breakdown-${index}`}><X size={14} /></button></div>)}<div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14 }}><button className="button button-secondary" onClick={convert} data-testid="button-add-breakdown-to-plan"><ListChecks size={15} /> Add these to my plan</button></div></section>}<section style={{ marginTop: 35 }}><div className="section-title"><h2>Recent captures</h2><span>Only you can see these</span></div><div className="task-list">{state.captures.map((capture) => <div className="task-row" key={capture.id} data-testid={`row-capture-${capture.id}`}><div style={{ width: 22, height: 22, borderRadius: 7, background: 'hsl(var(--secondary))', display: 'grid', placeItems: 'center', color: 'hsl(var(--secondary-foreground))' }}><Brain size={13} /></div><div><div className="task-name" style={{ fontWeight: 500 }}>{capture.text}</div><div className="task-meta"><span>{capture.createdAt}</span>{capture.converted && <span className="task-tag">Added to plan</span>}</div></div><button className="icon-button" onClick={() => { update((s) => ({ ...s, captures: s.captures.filter((item) => item.id !== capture.id) })); setNotice('Capture deleted.'); }} aria-label="Delete capture" data-testid={`button-delete-capture-${capture.id}`}><Trash2 size={15} /></button></div>)}</div></section></div></div>;
+
+  const toggleListen = () => {
+    if (listening) {
+      setListening(false);
+      return;
+    }
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setNotice('Voice capture is not available in this browser.');
+      return;
+    }
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+    
+    let baseText = text ? text + " " : "";
+    
+    recognition.onstart = () => setListening(true);
+    recognition.onresult = (event: any) => {
+      const transcript = Array.from(event.results).map((r: any) => r[0].transcript).join('');
+      setText(baseText + transcript);
+      setReply('');
+      setRemovedParts([]);
+    };
+    recognition.onerror = () => setListening(false);
+    recognition.onend = () => setListening(false);
+    
+    try {
+      recognition.start();
+    } catch(e) {
+      setListening(false);
+    }
+  };
+
+  return <div className="page-wrap"><div className="capture-page"><PageHeader eyebrow="No sorting required" title={<>Say it before you <span className="serif">lose it.</span></>} subtitle="A private landing place for the thought circling your head." /><section className="card capture-box"><textarea ref={textAreaRef} className="capture-input" placeholder="What’s taking up a little too much room in your mind?" value={text} onChange={(event) => { setText(event.target.value); setReply(''); setRemovedParts([]); }} aria-label="Brain dump" data-testid="textarea-brain-dump" /><div className="capture-footer"><div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginTop: 14, flex: 1, padding: '20px 0' }}><button className={`voice-button-large ${listening ? 'listening' : ''}`} onClick={toggleListen} aria-label={listening ? 'Stop voice capture' : 'Start voice-style capture'} data-testid="button-voice-capture"><Mic size={32} /></button><span style={{ fontSize: 13, fontWeight: 500, color: 'hsl(var(--muted-foreground))', marginTop: 16 }}>{listening ? "Listening…" : "Tap to speak"}</span></div></div><div style={{ display: 'flex', justifyContent: 'flex-end', borderTop: '1px solid hsl(var(--border))', paddingTop: 16, marginTop: 10 }}><button className="button button-primary" onClick={save} disabled={!text.trim()} data-testid="button-capture-thought"><Sparkles size={15} /> Make sense of this</button></div></section>{reply && <div className="assistant-note" data-testid="text-assistant-response"><div className="assistant-symbol"><Sparkles size={14} /></div><p>{reply}<br /><span style={{ display: 'block', marginTop: 6, color: 'hsl(var(--muted-foreground))', fontSize: 11 }}>This is a small built-in reflection based on your words, not a connected external AI service.</span></p></div>}{reply && parts.length > 0 && <section className="card breakdown">{parts.length > 1 ? <h2 style={{ fontSize: 16, marginBottom: 16 }}>Want me to turn this into a realistic plan?</h2> : <div className="section-title"><h2>Possible small steps</h2><span>Nothing is committed yet</span></div>}{parts.map((part, index) => <div className="breakdown-row" key={`${part}-${index}`}><span className="priority-dot" /><span style={{ flex: 1 }}>{part}</span><button className="icon-button" onClick={() => setRemovedParts((current) => [...current, part])} aria-label={`Remove suggested step ${index + 1}`} data-testid={`button-remove-breakdown-${index}`}><X size={14} /></button></div>)}<div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14 }}><button className="button button-secondary" onClick={convert} data-testid="button-add-breakdown-to-plan"><ListChecks size={15} /> Add these to my plan</button></div></section>}<section style={{ marginTop: 35 }}><div className="section-title"><h2>Recent captures</h2><span>Only you can see these</span></div><div className="task-list">{state.captures.map((capture) => <div className="task-row" key={capture.id} data-testid={`row-capture-${capture.id}`}><div style={{ width: 22, height: 22, borderRadius: 7, background: 'hsl(var(--secondary))', display: 'grid', placeItems: 'center', color: 'hsl(var(--secondary-foreground))' }}><Brain size={13} /></div><div><div className="task-name" style={{ fontWeight: 500 }}>{capture.text}</div><div className="task-meta"><span>{capture.createdAt}</span>{capture.converted && <span className="task-tag">Added to plan</span>}</div></div><button className="icon-button" onClick={() => { update((s) => ({ ...s, captures: s.captures.filter((item) => item.id !== capture.id) })); setNotice('Capture deleted.'); }} aria-label="Delete capture" data-testid={`button-delete-capture-${capture.id}`}><Trash2 size={15} /></button></div>)}</div></section></div></div>;
 }
 
 function Me({ app }: { app: ReturnType<typeof useAppState> }) {
   const { state, update, reset, setNotice } = app;
-  const accents = [{ name: 'Clay', value: '#e88870' }, { name: 'Olive', value: '#9fbfae' }, { name: 'Ochre', value: '#c49b59' }, { name: 'Berry', value: '#b9798c' }];
-  return <div className="page-wrap"><PageHeader eyebrow="The way it feels" title={<>Make it <span className="serif">yours.</span></>} subtitle="A few gentle controls for how My Day holds your life." /><div className="settings-grid"><div className="stack"><section className="card settings-card"><h2>Preferences</h2><p>Small choices, saved on this device.</p><div className="setting-row"><div><strong>Dark mode</strong><span>Lower the lights for late-day planning.</span></div><button className={`switch ${state.preferences.dark ? 'on' : ''}`} onClick={() => update((s) => ({ ...s, preferences: { ...s.preferences, dark: !s.preferences.dark } }))} aria-label="Toggle dark mode" data-testid="switch-dark-mode" /></div><div className="setting-row"><div><strong>Helpful reminders</strong><span>A quiet nudge when a task has been waiting.</span></div><button className={`switch ${state.preferences.reminders ? 'on' : ''}`} onClick={() => update((s) => ({ ...s, preferences: { ...s.preferences, reminders: !s.preferences.reminders } }))} aria-label="Toggle reminders" data-testid="switch-reminders" /></div><div className="setting-row"><div><strong>Remember my patterns</strong><span>Keep preferences and planning context locally.</span></div><button className={`switch ${state.preferences.memory ? 'on' : ''}`} onClick={() => update((s) => ({ ...s, preferences: { ...s.preferences, memory: !s.preferences.memory } }))} aria-label="Toggle memory" data-testid="switch-memory" /></div></section><section className="card settings-card"><h2>Accent</h2><p>Choose the little spark that follows you around.</p><div className="swatches" role="radiogroup" aria-label="Accent color">{accents.map((accent) => <button key={accent.value} className={`swatch ${state.preferences.accent === accent.value ? 'selected' : ''}`} style={{ background: accent.value }} onClick={() => { update((s) => ({ ...s, preferences: { ...s.preferences, accent: accent.value } })); setNotice(`${accent.name} is a good choice.`); }} aria-label={`Use ${accent.name} accent`} data-testid={`button-accent-${accent.name.toLowerCase()}`} />)}</div></section></div><div className="stack"><section className="card settings-card"><h2>Your privacy</h2><p>My Day is designed to feel personal without being mysterious.</p><div className="soft-card" style={{ padding: 15, display: 'flex', gap: 11, alignItems: 'flex-start' }}><ShieldCheck size={18} color="hsl(var(--primary))" /><div><strong style={{ fontSize: 12 }}>Stored on this device</strong><p style={{ margin: '4px 0 0', fontSize: 11, lineHeight: 1.5 }}>Your tasks, captures, and preferences live in local storage. Nothing in this MVP is sent to an external assistant.</p></div></div><div className="setting-row"><div><strong>Clear all day data</strong><span>Return to the welcoming sample day.</span></div><button className="button button-danger" onClick={reset} data-testid="button-reset-data"><RotateCcw size={14} /> Reset</button></div></section><section className="soft-card" style={{ padding: 20 }}><div style={{ display: 'flex', gap: 11 }}><Keyboard size={17} color="hsl(var(--primary))" /><div><strong style={{ fontSize: 12 }}>A few useful keys</strong><p style={{ margin: '7px 0 0', color: 'hsl(var(--muted-foreground))', fontSize: 11, lineHeight: 1.65 }}>Use Command + Enter to save a quick capture. Your attention is the main interface.</p></div></div></section></div></div></div>;
+  const accents = [{ name: 'Clay', value: '#e88870' }, { name: 'Olive', value: '#9fbfae' }, { name: 'Ochre', value: '#c49b59' }, { name: 'Berry', value: '#b9798c' }, { name: 'Rose', value: '#c47d8a' }, { name: 'Slate', value: '#7b9eb5' }, { name: 'Dusk', value: '#9b8bbf' }];
+  
+  const ALL_SECTIONS = ['briefing', 'whatnow', 'priorities', 'timeline', 'capture', 'quote'];
+  const activeSections = state.preferences.sectionOrder || ALL_SECTIONS;
+  const inactiveSections = ALL_SECTIONS.filter(s => !activeSections.includes(s));
+  const sectionLabels: Record<string, string> = { briefing: 'Morning Briefing', whatnow: 'What should I do right now?', priorities: 'Worth your attention', timeline: 'Your shape of today', capture: 'Capture box', quote: 'Daily Quote' };
+
+  return <div className="page-wrap"><PageHeader eyebrow="The way it feels" title={<>Make it <span className="serif">yours.</span></>} subtitle="A few gentle controls for how My Day holds your life." /><div className="settings-grid"><div className="stack"><section className="card settings-card"><h2>Appearance</h2><p>Choose colors and fonts that feel right.</p><div className="setting-row"><div><strong>Color theme</strong><span>Light or dark mode</span></div><button className={`switch ${state.preferences.dark ? 'on' : ''}`} onClick={() => update((s) => ({ ...s, preferences: { ...s.preferences, dark: !s.preferences.dark } }))} aria-label="Toggle dark mode" data-testid="switch-dark-mode" /></div><div className="setting-row"><div><strong>App Font</strong><span>Personalize your reading experience</span></div><select className="field" style={{ width: 'auto', minWidth: 120, height: 44, padding: '0 12px' }} value={state.preferences.fontStyle || 'modern'} onChange={e => update(s => ({ ...s, preferences: { ...s.preferences, fontStyle: e.target.value as any } }))}><option value="modern">Modern (DM Sans)</option><option value="classic">Classic (Lora)</option><option value="rounded">Rounded (Nunito)</option></select></div><div className="setting-row" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 12 }}><div><strong>Accent color</strong><span>Used for highlights and active states</span></div><div className="swatches" style={{ flexWrap: 'wrap' }} role="radiogroup" aria-label="Accent color">{accents.map((accent) => <button key={accent.value} className={`swatch ${state.preferences.accent === accent.value ? 'selected' : ''}`} style={{ background: accent.value }} onClick={() => { update((s) => ({ ...s, preferences: { ...s.preferences, accent: accent.value } })); setNotice(`${accent.name} is a good choice.`); }} aria-label={`Use ${accent.name} accent`} data-testid={`button-accent-${accent.name.toLowerCase()}`} />)}</div></div></section><section className="card settings-card"><h2>Customize Today</h2><p>Reorder or hide sections on your Today view.</p><div className="stack" style={{ gap: 0, marginTop: 12 }}>{activeSections.map((s, idx) => (<div key={s} className="setting-row" style={{ padding: '10px 0', borderBottom: '1px solid hsl(var(--border))', borderTop: 'none' }}><div style={{ display: 'flex', alignItems: 'center', gap: 12 }}><button className="icon-button" style={{ width: 32, height: 32, minWidth: 32, minHeight: 32 }} onClick={() => { update(st => ({ ...st, preferences: { ...st.preferences, sectionOrder: st.preferences.sectionOrder.filter(x => x !== s) }})); }}><Check size={16} color="hsl(var(--primary))" /></button><strong style={{ fontSize: 13 }}>{sectionLabels[s] || s}</strong></div><div style={{ display: 'flex', gap: 4 }}><button className="icon-button" style={{ width: 32, height: 32, minWidth: 32, minHeight: 32 }} disabled={idx === 0} onClick={() => { const arr = [...state.preferences.sectionOrder]; [arr[idx], arr[idx - 1]] = [arr[idx - 1], arr[idx]]; update(st => ({ ...st, preferences: { ...st.preferences, sectionOrder: arr }})); }}><ChevronUp size={16} /></button><button className="icon-button" style={{ width: 32, height: 32, minWidth: 32, minHeight: 32 }} disabled={idx === activeSections.length - 1} onClick={() => { const arr = [...state.preferences.sectionOrder]; [arr[idx], arr[idx + 1]] = [arr[idx + 1], arr[idx]]; update(st => ({ ...st, preferences: { ...st.preferences, sectionOrder: arr }})); }}><ChevronDown size={16} /></button></div></div>))}{inactiveSections.map(s => (<div key={s} className="setting-row" style={{ padding: '10px 0', borderBottom: '1px solid hsl(var(--border))', borderTop: 'none', opacity: 0.6 }}><div style={{ display: 'flex', alignItems: 'center', gap: 12 }}><button className="icon-button" style={{ width: 32, height: 32, minWidth: 32, minHeight: 32 }} onClick={() => { update(st => ({ ...st, preferences: { ...st.preferences, sectionOrder: [...st.preferences.sectionOrder, s] }})); }}><Plus size={16} /></button><strong style={{ fontSize: 13 }}>{sectionLabels[s] || s}</strong></div></div>))}</div></section></div><div className="stack"><section className="card settings-card"><h2>Connected Services</h2><p>Link external tools to shape your day.</p><div className="setting-row"><div><strong>Calendar</strong><span>{state.preferences.calendarConnected === 'none' ? 'Not connected' : `Connected`}</span></div><select className="field" style={{ width: 'auto', minWidth: 120, height: 44, padding: '0 12px' }} value={state.preferences.calendarConnected || 'none'} onChange={e => update(s => ({ ...s, preferences: { ...s.preferences, calendarConnected: e.target.value as any } }))}><option value="none">None</option><option value="google">Google Calendar</option><option value="outlook">Outlook</option></select></div></section><section className="card settings-card"><h2>Your privacy</h2><p>My Day is designed to feel personal without being mysterious.</p><div className="soft-card" style={{ padding: 15, display: 'flex', gap: 11, alignItems: 'flex-start' }}><ShieldCheck size={18} color="hsl(var(--primary))" /><div><strong style={{ fontSize: 12 }}>Stored on this device</strong><p style={{ margin: '4px 0 0', fontSize: 11, lineHeight: 1.5 }}>Your tasks, captures, and preferences live in local storage. Nothing in this MVP is sent to an external assistant.</p></div></div><div className="setting-row"><div><strong>Clear all day data</strong><span>Return to the welcoming sample day.</span></div><button className="button button-danger" onClick={reset} data-testid="button-reset-data"><RotateCcw size={14} /> Reset</button></div></section><section className="soft-card" style={{ padding: 20 }}><div style={{ display: 'flex', gap: 11 }}><Keyboard size={17} color="hsl(var(--primary))" /><div><strong style={{ fontSize: 12 }}>A few useful keys</strong><p style={{ margin: '7px 0 0', color: 'hsl(var(--muted-foreground))', fontSize: 11, lineHeight: 1.65 }}>Use Command + Enter to save a quick capture. Your attention is the main interface.</p></div></div></section></div></div></div>;
 }
 
 function NotFoundView() { return <div className="page-wrap"><div className="empty-state" style={{ marginTop: '15vh' }}><Compass size={25} /><h1 className="page-title" style={{ fontSize: 35 }}>A quiet dead end.</h1><p>That page is not part of today.</p><Link className="button button-primary" href="/" data-testid="link-back-home">Back to today</Link></div></div>; }

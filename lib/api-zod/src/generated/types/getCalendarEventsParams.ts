@@ -6,6 +6,9 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface HealthStatus {
-  status: string;
-}
+export type GetCalendarEventsParams = {
+/**
+ * ISO date string (YYYY-MM-DD), defaults to today
+ */
+date?: string;
+};
