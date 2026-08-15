@@ -18,4 +18,5 @@ export interface Preferences {
   fontStyle: PreferencesFontStyle;
   calendarConnected: PreferencesCalendarConnected;
   calendarPrefs?: PreferencesCalendarPrefs;
+  dismissedDuplicates?: string[];
 }

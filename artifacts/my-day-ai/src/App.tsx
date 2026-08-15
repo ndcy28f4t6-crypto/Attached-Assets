@@ -5,11 +5,12 @@ import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import {
-  Archive, ArrowLeft, ArrowRight, Bell, Brain, Calendar, CalendarClock, Check,
+  Archive, ArrowLeft, ArrowRight, Bell, Brain, Calendar, CalendarClock, CalendarDays, Cake, Check,
   CheckCircle2, ChevronDown, ChevronUp, CircleHelp, ClipboardList, Clock3, Command, Compass,
-  Download, FolderKanban, Gauge, Headphones, Home as HomeIcon, Keyboard, Lightbulb, ListChecks,
-  Menu, Mic, MoreHorizontal, Moon, Plus, RotateCcw, Search, Settings2, ShieldCheck,
-  Sparkles, Sun, Trash2, UserRound, Volume2, WandSparkles, X
+  Download, FolderKanban, Gauge, Headphones, HeartHandshake, Home as HomeIcon, Keyboard, Lightbulb,
+  ListChecks, Mail, Menu, MessageCircle, Mic, MoreHorizontal, Moon, Phone, Plus, RotateCcw,
+  Search, Settings2, ShieldCheck, Sparkles, Sun, Trash2, UserRound, UsersRound, Volume2,
+  WandSparkles, X
 } from 'lucide-react';
 import { Link, Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
 import {
@@ -65,14 +66,30 @@ type Task = {
 };
 type Project = { id: string; name: string; description: string; color: string; goal: string };
 type Capture = { id: string; text: string; createdAt: string; converted: boolean };
+type ImportantDate = { id: string; label: string; date: string };
+type ConnectionLog = { id: string; date: string; note?: string; method?: string };
+type Person = {
+  id: string;
+  name: string;
+  relationship: string;
+  contactMethod: string;
+  frequency: 'weekly' | 'biweekly' | 'monthly' | 'custom' | 'none';
+  customDays?: number;
+  birthday?: string;
+  importantDates: ImportantDate[];
+  notes: string;
+  lastConnectedAt?: string;
+  reminderSnoozedUntil?: string;
+  connections: ConnectionLog[];
+};
 type Preferences = { dark: boolean; accent: string; memory: boolean; reminders: boolean; sectionOrder: string[]; fontStyle: 'modern' | 'classic' | 'rounded'; calendarConnected: 'none' | 'google' | 'outlook'; calendarPrefs?: Record<string, { visible: boolean; color: string | null }>; dismissedDuplicates?: string[] };
 type WaitingFor = { id: string; person: string; item: string; addedAt: string };
-type AppState = { tasks: Task[]; projects: Project[]; captures: Capture[]; preferences: Preferences; waitingFor: WaitingFor[] };
+type AppState = { tasks: Task[]; projects: Project[]; captures: Capture[]; preferences: Preferences; waitingFor: WaitingFor[]; people: Person[] };
 
 const defaultPreferences: Preferences = {
   dark: false, accent: '#e88870', memory: true, reminders: true,
   sectionOrder: ['briefing', 'whatnow', 'priorities', 'timeline', 'capture', 'quote'],
-  fontStyle: 'modern', calendarConnected: 'none', calendarPrefs: {},
+  fontStyle: 'modern', calendarConnected: 'none', calendarPrefs: {}, dismissedDuplicates: [],
 };
 
 /** Read & backfill legacy localStorage state for one-time migration. */
@@ -86,7 +103,9 @@ function readLegacyLocalStorage(): AppState | null {
     if (!parsed.preferences.fontStyle) parsed.preferences.fontStyle = defaultPreferences.fontStyle;
     if (!parsed.preferences.calendarConnected) parsed.preferences.calendarConnected = defaultPreferences.calendarConnected;
     if (!parsed.preferences.calendarPrefs) parsed.preferences.calendarPrefs = {};
+    if (!parsed.preferences.dismissedDuplicates) parsed.preferences.dismissedDuplicates = [];
     if (!parsed.waitingFor) parsed.waitingFor = [];
+    if (!parsed.people) parsed.people = [];
     return parsed;
   } catch {
     return null;
@@ -95,7 +114,20 @@ function readLegacyLocalStorage(): AppState | null {
 
 /** Coerce the server AppState type into our local AppState type (they match structurally). */
 function toLocalState(s: ServerAppState): AppState {
-  return s as unknown as AppState;
+  const raw = s as unknown as Partial<AppState>;
+  return {
+    tasks: raw.tasks ?? [],
+    projects: raw.projects ?? [],
+    captures: raw.captures ?? [],
+    waitingFor: raw.waitingFor ?? [],
+    people: raw.people ?? [],
+    preferences: {
+      ...defaultPreferences,
+      ...(raw.preferences ?? {}),
+      calendarPrefs: raw.preferences?.calendarPrefs ?? {},
+      dismissedDuplicates: raw.preferences?.dismissedDuplicates ?? [],
+    },
+  };
 }
 
 function useAppState() {
@@ -224,13 +256,39 @@ function useAppState() {
     update((s) => ({ ...s, tasks: s.tasks.map((t) => t.id === id ? { ...t, done: !t.done } : t) })), [update]);
 
   const removeTask = useCallback((id: string) =>
-    update((s) => ({ ...s, tasks: s.tasks.filter((t) => t.id !== id) })), [update]);
+    update((s) => ({
+      ...s,
+      tasks: s.tasks.filter((t) => t.id !== id),
+      preferences: {
+        ...s.preferences,
+        dismissedDuplicates: (s.preferences.dismissedDuplicates ?? []).filter((key) => !key.includes(id)),
+      },
+    })), [update]);
 
   const addTask = useCallback((task: Omit<Task, 'id' | 'done'>) =>
     update((s) => ({ ...s, tasks: [{ ...task, id: `t${Date.now()}`, done: false }, ...s.tasks] })), [update]);
 
   const editTask = useCallback((id: string, patch: Partial<Task>) =>
     update((s) => ({ ...s, tasks: s.tasks.map((t) => t.id === id ? { ...t, ...patch } : t) })), [update]);
+
+  const addPerson = useCallback((person: Omit<Person, 'id' | 'connections'>) =>
+    update((s) => ({ ...s, people: [{ ...person, id: `p${Date.now()}`, connections: [] }, ...s.people] })), [update]);
+
+  const editPerson = useCallback((id: string, patch: Partial<Omit<Person, 'id' | 'connections'>>) =>
+    update((s) => ({ ...s, people: s.people.map((person) => person.id === id ? { ...person, ...patch } : person) })), [update]);
+
+  const removePerson = useCallback((id: string) =>
+    update((s) => ({ ...s, people: s.people.filter((person) => person.id !== id) })), [update]);
+
+  const logConnection = useCallback((id: string, note?: string, method?: string) =>
+    update((s) => ({
+      ...s,
+      people: s.people.map((person) => person.id === id ? {
+        ...person,
+        lastConnectedAt: new Date().toISOString(),
+        connections: [{ id: `c${Date.now()}`, date: new Date().toISOString(), note: note?.trim() || undefined, method: method || undefined }, ...person.connections].slice(0, 30),
+      } : person),
+    })), [update]);
 
   const addCapture = useCallback((text: string) =>
     update((s) => ({ ...s, captures: [{ id: `c${Date.now()}`, text, createdAt: 'Just now', converted: false }, ...s.captures] })), [update]);
@@ -258,12 +316,13 @@ function useAppState() {
       ],
       preferences: defaultPreferences,
       waitingFor: [],
+      people: [],
     };
     setState(seedState);
     setNotice('Your sample day is back.');
   }, []);
 
-  return { state, isLoading: isServerLoading || !state, update, toggleTask, removeTask, addTask, editTask, addCapture, reset, notice, setNotice };
+  return { state, isLoading: isServerLoading || !state, update, toggleTask, removeTask, addTask, editTask, addCapture, addPerson, editPerson, removePerson, logConnection, reset, notice, setNotice };
 }
 
 function hexToHsl(hex: string) {
@@ -277,6 +336,56 @@ function hexToHsl(hex: string) {
   return `${Math.round(h * 360)} ${Math.round(s * 100)}% ${Math.round(l * 100)}%`;
 }
 
+function localDateKey(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function formatPersonDate(value?: string) {
+  if (!value) return '';
+  const parsed = new Date(`${value.slice(0, 10)}T12:00:00`);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleDateString('default', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function frequencyDays(person: Person) {
+  if (person.frequency === 'weekly') return 7;
+  if (person.frequency === 'biweekly') return 14;
+  if (person.frequency === 'monthly') return 30;
+  return person.frequency === 'custom' ? Math.max(1, person.customDays ?? 30) : Infinity;
+}
+
+function isPersonReadyForGentlePrompt(person: Person) {
+  if (!person.lastConnectedAt || person.frequency === 'none' || (person.reminderSnoozedUntil && new Date(person.reminderSnoozedUntil).getTime() > Date.now())) return false;
+  const daysSince = Math.floor((Date.now() - new Date(person.lastConnectedAt).getTime()) / 86400000);
+  return daysSince >= frequencyDays(person);
+}
+
+function nextAnnualDate(value: string) {
+  const source = new Date(`${value.slice(0, 10)}T12:00:00`);
+  if (Number.isNaN(source.getTime())) return null;
+  const now = new Date();
+  let candidate = new Date(now.getFullYear(), source.getMonth(), source.getDate(), 12);
+  if (candidate.getTime() < new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12).getTime()) {
+    candidate = new Date(now.getFullYear() + 1, source.getMonth(), source.getDate(), 12);
+  }
+  return Math.ceil((candidate.getTime() - new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12).getTime()) / 86400000);
+}
+
+function normalizeWords(value: string) {
+  const ignored = new Set(['a', 'an', 'and', 'at', 'for', 'from', 'in', 'my', 'of', 'on', 'our', 'the', 'to', 'with']);
+  return value.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter((word) => word && !ignored.has(word));
+}
+
+function findPersonInText(text: string, people: Person[]) {
+  const words = normalizeWords(text);
+  return people.find((person) => {
+    const aliases = [person.name, person.relationship].flatMap(normalizeWords).filter(Boolean);
+    return aliases.some((alias) => alias.length > 0 && words.includes(alias));
+  });
+}
+
 function Logo() {
   return <div className="brand" style={{ display: 'flex', alignItems: 'center', gap: 10 }}><div className="brand-mark">m</div><span className="brand-word">my day<span style={{ color: 'hsl(var(--primary))' }}>.</span></span></div>;
 }
@@ -285,6 +394,7 @@ function navItems() {
   return [
     { href: '/', label: 'Today', icon: HomeIcon },
     { href: '/plan', label: 'Plan', icon: Calendar },
+    { href: '/people', label: 'People', icon: UsersRound },
     { href: '/projects', label: 'Projects', icon: FolderKanban },
     { href: '/capture', label: 'Capture', icon: Brain },
   ];
@@ -371,12 +481,21 @@ function WhatNowSection({ remaining, hour }: { remaining: Task[]; hour: number }
 
 function Home({ app }: { app: ReturnType<typeof useAppState> }) {
   const { state, toggleTask, removeTask, update, setNotice } = app;
+  const { data: todayCalendarEvents } = useGetCalendarEvents({ date: localDateKey(new Date()) });
+  const tomorrowDate = new Date();
+  tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+  const { data: tomorrowCalendarEvents } = useGetCalendarEvents({ date: localDateKey(tomorrowDate) });
   const [overwhelmed, setOverwhelmed] = useState(false);
   const [captureText, setCaptureText] = useState('');
   if (!state) return null;
   const remaining = state.tasks.filter((task) => !task.done && task.due === 'Today');
   const next = remaining[0];
   const completed = state.tasks.filter((task) => task.done).length;
+  const calendarTitles = ([...(todayCalendarEvents ?? []), ...(tomorrowCalendarEvents ?? [])] as Array<{ title: string }>).map((event) => normalizeWords(event.title));
+  const checkInPeople = state.people.filter((person) => isPersonReadyForGentlePrompt(person) && !calendarTitles.some((title) => {
+    const personWords = normalizeWords(person.name);
+    return personWords.length > 0 && personWords.every((word) => title.includes(word));
+  })).slice(0, 2);
   
   const hour = new Date().getHours();
   let greeting = "Good evening";
@@ -424,6 +543,7 @@ function Home({ app }: { app: ReturnType<typeof useAppState> }) {
 
   return <div className="page-wrap">
     <PageHeader eyebrow={new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })} title={<>{greeting}, <span className="serif">Satin.</span></>} subtitle={`${remaining.length} things worth your attention today. We can make room for them.`} action={<button className="button button-secondary" onClick={() => setOverwhelmed(true)} data-testid="button-overwhelmed"><CircleHelp size={15} /> I'm overwhelmed</button>} />
+    {checkInPeople.length > 0 && <section className="card connection-nudge" data-testid="card-stay-connected"><div className="connection-nudge-icon"><HeartHandshake size={18} /></div><div><div className="eyebrow">Stay connected</div><h2>{checkInPeople.length === 1 ? `${checkInPeople[0].name} has been on your mind.` : 'A couple of people are on your mind.'}</h2><p>It’s been a little while. Want to check in, in whatever way feels natural?</p><Link className="button button-secondary" href="/people" data-testid="link-stay-connected">See people</Link></div></section>}
     <div className="grid-home">
       <div className="stack">
         {leftNames.map(renderSection)}
@@ -447,6 +567,158 @@ function TaskModal({ initial, onClose, onSave }: { initial?: Task; onClose: () =
   const [estTime, setEstTime] = useState(initial?.estTime || '15 min');
   const [priority, setPriority] = useState<Task['priority']>(initial?.priority || 'medium');
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose(); }}><div className="modal" role="dialog" aria-modal="true" aria-labelledby="task-modal-title"><div className="modal-head"><h2 id="task-modal-title">{initial ? 'Shape this task' : 'Add a task'}</h2><button className="icon-button" onClick={onClose} aria-label="Close task form" data-testid="button-close-task-form"><X size={18} /></button></div><form className="form-stack" onSubmit={(event) => { event.preventDefault(); if (title.trim()) onSave({ title: title.trim(), project, due, time: time || undefined, estTime, priority }); }}><div><label className="field-label" htmlFor="task-title">What needs doing?</label><input id="task-title" autoFocus className="field" value={title} onChange={(event) => setTitle(event.target.value)} data-testid="input-task-title" /></div><div><label className="field-label" htmlFor="task-project">Area</label><input id="task-project" className="field" value={project} onChange={(event) => setProject(event.target.value)} data-testid="input-task-project" /></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}><div><label className="field-label" htmlFor="task-due">When</label><select id="task-due" className="field" value={due} onChange={(event) => setDue(event.target.value)} data-testid="select-task-due"><option>Today</option><option>Tomorrow</option><option>Friday</option><option>Someday</option></select></div><div><label className="field-label" htmlFor="task-time">Time <span style={{ fontWeight: 400 }}>(optional)</span></label><input id="task-time" type="time" className="field" value={time} onChange={(event) => setTime(event.target.value)} data-testid="input-task-time" /></div></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}><div><label className="field-label" htmlFor="task-estTime">Estimated time</label><select id="task-estTime" className="field" value={estTime} onChange={(event) => setEstTime(event.target.value)} data-testid="select-task-est-time"><option>5 min</option><option>15 min</option><option>30 min</option><option>1 hour</option><option>2+ hours</option></select></div><div><label className="field-label" htmlFor="task-priority">Energy level</label><select id="task-priority" className="field" value={priority} onChange={(event) => setPriority(event.target.value as Task['priority'])} data-testid="select-task-priority"><option value="high">High focus</option><option value="medium">Medium focus</option><option value="low">Low focus</option></select></div></div><div className="form-actions"><button type="button" className="button button-ghost" onClick={onClose} data-testid="button-cancel-task">Cancel</button><button className="button button-primary" type="submit" data-testid="button-save-task">{initial ? 'Save changes' : 'Add to plan'}</button></div></form></div></div>;
+}
+
+function PersonModal({ initial, onClose, onSave }: { initial?: Person; onClose: () => void; onSave: (person: Omit<Person, 'id' | 'connections'>) => void }) {
+  const [name, setName] = useState(initial?.name || '');
+  const [relationship, setRelationship] = useState(initial?.relationship || '');
+  const [contactMethod, setContactMethod] = useState(initial?.contactMethod || 'Text');
+  const [frequency, setFrequency] = useState<Person['frequency']>(initial?.frequency || 'monthly');
+  const [customDays, setCustomDays] = useState(String(initial?.customDays || 30));
+  const [birthday, setBirthday] = useState(initial?.birthday || '');
+  const [notes, setNotes] = useState(initial?.notes || '');
+  const [importantDates, setImportantDates] = useState<ImportantDate[]>(initial?.importantDates || []);
+  const [dateLabel, setDateLabel] = useState('');
+  const [dateValue, setDateValue] = useState('');
+
+  const addImportantDate = () => {
+    if (!dateLabel.trim() || !dateValue) return;
+    setImportantDates((dates) => [...dates, { id: `d${Date.now()}`, label: dateLabel.trim(), date: dateValue }]);
+    setDateLabel('');
+    setDateValue('');
+  };
+
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose(); }}>
+    <div className="modal people-modal" role="dialog" aria-modal="true" aria-labelledby="person-modal-title">
+      <div className="modal-head"><div><h2 id="person-modal-title">{initial ? 'Shape this connection' : 'Add someone important'}</h2><p style={{ margin: '5px 0 0', color: 'hsl(var(--muted-foreground))', fontSize: 12 }}>Just enough context to make staying close feel easy.</p></div><button className="icon-button" onClick={onClose} aria-label="Close person form"><X size={18} /></button></div>
+      <form className="form-stack" onSubmit={(event) => { event.preventDefault(); if (!name.trim()) return; onSave({ name: name.trim(), relationship: relationship.trim(), contactMethod, frequency, customDays: frequency === 'custom' ? Math.max(1, Number(customDays) || 30) : undefined, birthday: birthday || undefined, importantDates, notes: notes.trim() }); }}>
+        <div><label className="field-label" htmlFor="person-name">Name</label><input id="person-name" autoFocus className="field" value={name} onChange={(event) => setName(event.target.value)} placeholder="Sarah" data-testid="input-person-name" /></div>
+        <div className="person-form-grid"><div><label className="field-label" htmlFor="person-relationship">Who are they?</label><input id="person-relationship" className="field" value={relationship} onChange={(event) => setRelationship(event.target.value)} placeholder="Sister, friend, mentor…" data-testid="input-person-relationship" /></div><div><label className="field-label" htmlFor="person-contact-method">Favorite way to connect</label><select id="person-contact-method" className="field" value={contactMethod} onChange={(event) => setContactMethod(event.target.value)} data-testid="select-person-contact-method"><option>Text</option><option>Call</option><option>Voice note</option><option>Email</option><option>In person</option></select></div></div>
+        <div className="person-form-grid"><div><label className="field-label" htmlFor="person-frequency">A natural rhythm</label><select id="person-frequency" className="field" value={frequency} onChange={(event) => setFrequency(event.target.value as Person['frequency'])} data-testid="select-person-frequency"><option value="weekly">Every week</option><option value="biweekly">Every 2 weeks</option><option value="monthly">Every month</option><option value="custom">Custom</option><option value="none">No reminders</option></select></div>{frequency === 'custom' ? <div><label className="field-label" htmlFor="person-custom-days">Every how many days?</label><input id="person-custom-days" type="number" min="1" className="field" value={customDays} onChange={(event) => setCustomDays(event.target.value)} data-testid="input-person-custom-days" /></div> : <div />}
+        </div>
+        <div><label className="field-label" htmlFor="person-birthday">Birthday <span style={{ fontWeight: 400 }}>(optional)</span></label><input id="person-birthday" type="date" className="field" value={birthday} onChange={(event) => setBirthday(event.target.value)} data-testid="input-person-birthday" /></div>
+        <div className="important-date-editor"><label className="field-label">Other important dates</label><div className="person-form-grid"><input className="field" value={dateLabel} onChange={(event) => setDateLabel(event.target.value)} placeholder="Anniversary, graduation…" aria-label="Important date name" /><input type="date" className="field" value={dateValue} onChange={(event) => setDateValue(event.target.value)} aria-label="Important date" /><button type="button" className="button button-secondary" onClick={addImportantDate} aria-label="Add important date"><Plus size={15} /></button></div>{importantDates.length > 0 && <div className="important-date-list">{importantDates.map((date) => <div className="important-date-row" key={date.id}><span><strong>{date.label}</strong> · {formatPersonDate(date.date)}</span><button type="button" className="icon-button" onClick={() => setImportantDates((dates) => dates.filter((item) => item.id !== date.id))} aria-label={`Remove ${date.label}`}><X size={14} /></button></div>)}</div>}</div>
+        <div><label className="field-label" htmlFor="person-notes">A little context <span style={{ fontWeight: 400 }}>(optional)</span></label><textarea id="person-notes" className="field person-notes" value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="What are they into lately? What makes them feel cared for?" data-testid="textarea-person-notes" /></div>
+        <div className="form-actions"><button type="button" className="button button-ghost" onClick={onClose}>Cancel</button><button className="button button-primary" type="submit" data-testid="button-save-person">{initial ? 'Save changes' : 'Add person'}</button></div>
+      </form>
+    </div>
+  </div>;
+}
+
+function personEventMatch(person: Person, titles: string[][]) {
+  const personWords = normalizeWords(person.name);
+  return personWords.length > 0 && titles.some((title) => personWords.every((word) => title.includes(word)));
+}
+
+function People({ app }: { app: ReturnType<typeof useAppState> }) {
+  const { state, addPerson, editPerson, removePerson, logConnection, setNotice } = app;
+  const [query, setQuery] = useState('');
+  const [modal, setModal] = useState<{ open: boolean; person?: Person }>({ open: false });
+  const { data: todayCalendarEvents } = useGetCalendarEvents({ date: localDateKey(new Date()) });
+  const tomorrowDate = new Date();
+  tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+  const { data: tomorrowCalendarEvents } = useGetCalendarEvents({ date: localDateKey(tomorrowDate) });
+
+  if (!state) return null;
+
+  const calendarTitles = ([...(todayCalendarEvents ?? []), ...(tomorrowCalendarEvents ?? [])] as Array<{ title: string }>).map((event) => normalizeWords(event.title));
+  const people = state.people.filter((person) => person.name.toLowerCase().includes(query.toLowerCase()) || person.relationship.toLowerCase().includes(query.toLowerCase()));
+  const savePerson = (data: Omit<Person, 'id' | 'connections'>) => {
+    if (modal.person) {
+      editPerson(modal.person.id, data);
+      setNotice('Connection details saved.');
+    } else {
+      addPerson(data);
+      setNotice(`${data.name} is now in your people.`);
+    }
+    setModal({ open: false });
+  };
+
+  return <div className="page-wrap">
+    <PageHeader eyebrow="The people who matter" title={<>Stay close, <span className="serif">gently.</span></>} subtitle="A private little place for the people you never want to lose track of." action={<button className="button button-primary" onClick={() => setModal({ open: true })} data-testid="button-add-person"><Plus size={16} /> Add someone</button>} />
+    <div className="people-intro soft-card"><div className="people-intro-icon"><HeartHandshake size={20} /></div><div><strong>Think of someone. Tell My Day.</strong><p>Say “I just talked to Sarah” in Capture and their last connection is handled for you.</p></div><Link className="button button-secondary" href="/capture" data-testid="link-people-capture"><MessageCircle size={15} /> Tell My Day</Link></div>
+    <div className="people-toolbar"><div className="search-field"><Search size={15} /><input className="field" type="search" placeholder="Find someone…" value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Search people" data-testid="input-search-people" /></div><button className="button button-secondary people-add-mobile" onClick={() => setModal({ open: true })}><Plus size={15} /> Add someone</button></div>
+    {people.length === 0 ? <div className="empty-state people-empty"><UsersRound size={25} /><h2>{state.people.length === 0 ? 'Your people are welcome here.' : 'No one by that name yet.'}</h2><p>{state.people.length === 0 ? 'Add a few people you want to keep close. No importing, no scoring, no pressure.' : 'Try another name or add someone new.'}</p>{state.people.length === 0 && <button className="button button-primary" onClick={() => setModal({ open: true })}><Plus size={15} /> Add someone</button>}</div> : <div className="people-grid">{people.map((person) => {
+      const due = isPersonReadyForGentlePrompt(person);
+      const hasPlan = personEventMatch(person, calendarTitles);
+      const latest = person.lastConnectedAt ? formatPersonDate(person.lastConnectedAt) : 'Not logged yet';
+      const upcomingDate = [...(person.birthday ? [{ label: 'Birthday', date: person.birthday }] : []), ...person.importantDates].map((date) => ({ ...date, days: nextAnnualDate(date.date) })).filter((date): date is typeof date & { days: number } => date.days !== null && date.days <= 30).sort((a, b) => a.days - b.days)[0];
+      return <article className="card person-card" key={person.id} data-testid={`card-person-${person.id}`}>
+        <div className="person-card-head"><div className="person-avatar">{person.name.slice(0, 1).toUpperCase()}</div><div className="person-card-actions"><button className="icon-button" onClick={() => setModal({ open: true, person })} aria-label={`Edit ${person.name}`}><MoreHorizontal size={17} /></button><button className="icon-button" onClick={() => { removePerson(person.id); setNotice(`${person.name} removed from your people.`); }} aria-label={`Remove ${person.name}`}><Trash2 size={15} /></button></div></div>
+        <h2>{person.name}</h2><p className="person-relationship">{person.relationship || 'Someone important'}</p>
+        <div className="person-last"><span className="eyebrow">Last connection</span><strong>{latest}</strong></div>
+        {due && !hasPlan && <div className="person-prompt"><HeartHandshake size={14} /><span>It’s been a little while. A small hello would be lovely.</span><button className="person-prompt-dismiss" onClick={() => { editPerson(person.id, { reminderSnoozedUntil: new Date(Date.now() + 7 * 86400000).toISOString() }); setNotice('Okay — I’ll give this some room.'); }} aria-label={`Remind me later about ${person.name}`}>Not now</button></div>}
+        {hasPlan && <div className="person-plan-note"><CalendarDays size={14} /> You have a plan together today.</div>}
+        {upcomingDate && <div className="person-date-note"><Cake size={14} /> {upcomingDate.label} {upcomingDate.days === 0 ? 'is today.' : `is in ${upcomingDate.days} ${upcomingDate.days === 1 ? 'day' : 'days'}.`}</div>}
+        <div className="person-details">{person.contactMethod && <span>{person.contactMethod === 'Call' ? <Phone size={13} /> : person.contactMethod === 'Email' ? <Mail size={13} /> : <MessageCircle size={13} />}{person.contactMethod}</span>}{person.frequency !== 'none' && <span><Bell size={13} />{person.frequency === 'custom' ? `Every ${person.customDays} days` : person.frequency === 'biweekly' ? 'Every 2 weeks' : person.frequency === 'weekly' ? 'Every week' : 'Every month'}</span>}</div>
+        {(person.birthday || person.importantDates.length > 0) && <div className="person-dates">{person.birthday && <span><Cake size={13} /> {formatPersonDate(person.birthday)}</span>}{person.importantDates.map((date) => <span key={date.id}><CalendarDays size={13} /> {date.label} · {formatPersonDate(date.date)}</span>)}</div>}
+        {person.notes && <p className="person-notes-preview">“{person.notes}”</p>}
+        <button className="button button-primary log-connection-button" onClick={() => { logConnection(person.id, undefined, person.contactMethod); setNotice(`Connection with ${person.name} logged.`); }} data-testid={`button-log-connection-${person.id}`}><HeartHandshake size={15} /> Log connection</button>
+      </article>;
+    })}</div>}
+    {modal.open && <PersonModal initial={modal.person} onClose={() => setModal({ open: false })} onSave={savePerson} />}
+  </div>;
+}
+
+type DuplicatePair = {
+  id: string;
+  left: { kind: 'Task'; title: string; detail: string };
+  right: { kind: 'Task' | 'Calendar event'; title: string; detail: string };
+  removeTaskId?: string;
+  removeTaskTitle?: string;
+};
+
+function titleSimilarity(first: string, second: string) {
+  const a = normalizeWords(first);
+  const b = normalizeWords(second);
+  if (a.length === 0 || b.length === 0) return 0;
+  if (a.join(' ') === b.join(' ')) return 1;
+  if ((a.length === 1 && b.length === 1) || (a.length === 1 && b.includes(a[0])) || (b.length === 1 && a.includes(b[0]))) return 0;
+  const aBigrams = new Set(a.slice(0, -1).map((word, index) => `${word} ${a[index + 1]}`));
+  const bBigrams = new Set(b.slice(0, -1).map((word, index) => `${word} ${b[index + 1]}`));
+  if (aBigrams.size === 0 || bBigrams.size === 0) return 0;
+  let overlap = 0;
+  aBigrams.forEach((bigram) => { if (bBigrams.has(bigram)) overlap += 1; });
+  return (2 * overlap) / (aBigrams.size + bBigrams.size);
+}
+
+function findDuplicatePairs(tasks: Task[], events: Array<{ id: string; title: string; start: string; allDay: boolean }>) {
+  const pairs: DuplicatePair[] = [];
+  for (let i = 0; i < tasks.length; i += 1) {
+    for (let j = i + 1; j < tasks.length; j += 1) {
+      if (titleSimilarity(tasks[i].title, tasks[j].title) > 0.8) {
+        pairs.push({
+          id: `task:${tasks[i].id}:${normalizeWords(tasks[i].title).join('-')}|task:${tasks[j].id}:${normalizeWords(tasks[j].title).join('-')}`,
+          left: { kind: 'Task', title: tasks[i].title, detail: `${tasks[i].due} · ${tasks[i].project}` },
+          right: { kind: 'Task', title: tasks[j].title, detail: `${tasks[j].due} · ${tasks[j].project}` },
+          removeTaskId: tasks[j].id,
+          removeTaskTitle: tasks[j].title,
+        });
+      }
+    }
+    events.forEach((event) => {
+      if (titleSimilarity(tasks[i].title, event.title) > 0.8) {
+        pairs.push({
+          id: `task:${tasks[i].id}:${normalizeWords(tasks[i].title).join('-')}|event:${event.id}:${normalizeWords(event.title).join('-')}`,
+          left: { kind: 'Task', title: tasks[i].title, detail: `${tasks[i].due} · ${tasks[i].project}` },
+          right: { kind: 'Calendar event', title: event.title, detail: event.allDay ? 'All day' : new Date(event.start).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) },
+          removeTaskId: tasks[i].id,
+          removeTaskTitle: tasks[i].title,
+        });
+      }
+    });
+  }
+  return pairs;
+}
+
+function DuplicateReviewModal({ pairs, onClose, onKeepBoth, onRemoveTask }: { pairs: DuplicatePair[]; onClose: () => void; onKeepBoth: (id: string) => void; onRemoveTask: (pair: DuplicatePair) => void }) {
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose(); }}>
+    <div className="modal duplicate-modal" role="dialog" aria-modal="true" aria-labelledby="duplicate-modal-title">
+      <div className="modal-head"><div><h2 id="duplicate-modal-title">A little overlap</h2><p style={{ margin: '5px 0 0', color: 'hsl(var(--muted-foreground))', fontSize: 12 }}>Keep what feels useful. Nothing changes unless you choose it.</p></div><button className="icon-button" onClick={onClose} aria-label="Close duplicate review"><X size={18} /></button></div>
+      <div className="duplicate-list">{pairs.map((pair) => <div className="duplicate-pair" key={pair.id}><div className="duplicate-columns"><div><span className="eyebrow">{pair.left.kind}</span><strong>{pair.left.title}</strong><small>{pair.left.detail}</small></div><div className="duplicate-bridge"><HeartHandshake size={14} /></div><div><span className="eyebrow">{pair.right.kind}</span><strong>{pair.right.title}</strong><small>{pair.right.detail}</small></div></div><div className="duplicate-actions"><button className="button button-ghost" onClick={() => onKeepBoth(pair.id)}>Keep both</button>{pair.removeTaskId && <button className="button button-secondary" onClick={() => onRemoveTask(pair)}>Remove {pair.removeTaskTitle}</button>}<button className="button button-ghost" onClick={() => onKeepBoth(pair.id)}>Ignore suggestion</button></div></div>)}</div>
+      <div className="form-actions"><button className="button button-secondary" onClick={onClose}>Done</button></div>
+    </div>
+  </div>;
 }
 
 function Plan({ app }: { app: ReturnType<typeof useAppState> }) {
@@ -581,9 +853,10 @@ function breakdownText(text: string) {
 }
 
 function CapturePage({ app }: { app: ReturnType<typeof useAppState> }) {
-  const { state, update, addCapture, addTask, setNotice } = app;
+  const { state, update, addCapture, addTask, logConnection, setNotice } = app;
   const [text, setText] = useState('');
   const [reply, setReply] = useState('');
+  const [reconnectPersonId, setReconnectPersonId] = useState<string | null>(null);
   const [listening, setListening] = useState(false);
   const [removedParts, setRemovedParts] = useState<string[]>([]);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
@@ -598,7 +871,36 @@ function CapturePage({ app }: { app: ReturnType<typeof useAppState> }) {
 
   if (!state) return null;
 
-  const save = () => { if (!text.trim()) return; addCapture(text.trim()); setReply(assistantReply(text)); setRemovedParts([]); setNotice('Thought captured.'); };
+  const save = () => {
+    if (!text.trim()) return;
+    const cleaned = text.trim();
+    const lower = cleaned.toLowerCase();
+    const person = findPersonInText(cleaned, state.people);
+    const isReminder = lower.includes('remind me');
+    const soundsRecent = /\b(just|today|yesterday|talked|spoke|called|call|saw|met|connected)\b/.test(lower) && !/\b(haven't|have not|months|forever|long time)\b/.test(lower) && !isReminder;
+    const soundsStale = /\b(haven't|have not|months|forever|long time)\b/.test(lower);
+    addCapture(cleaned);
+    setReconnectPersonId(null);
+    if (lower.includes('who should i check in') || lower.includes('who should i reach out')) {
+      const suggestions = state.people.filter((item) => isPersonReadyForGentlePrompt(item)).slice(0, 3);
+      setReply(suggestions.length > 0 ? `A few gentle possibilities: ${suggestions.map((item) => item.name).join(', ')}. No pressure — just people who may feel good to reconnect with.` : 'Everyone is held for now. You can always tell me about someone new.');
+    } else if (person && soundsRecent) {
+      logConnection(person.id, cleaned, person.contactMethod);
+      setReply(`I’ve noted that you connected with ${person.name}. That’s all handled.`);
+    } else if (person && soundsStale) {
+      setReconnectPersonId(person.id);
+      setReply(`It sounds like ${person.name} has been on your mind. We can make the next step very small.`);
+    } else if (person && lower.includes('when did i last')) {
+      setReply(person.lastConnectedAt ? `Your last logged connection with ${person.name} was ${formatPersonDate(person.lastConnectedAt)}.` : `I don’t have a connection logged for ${person.name} yet.`);
+    } else if (person && isReminder) {
+      addTask({ title: `Connect with ${person.name}`, project: 'People & connections', due: 'Tomorrow', priority: 'low' });
+      setReply(`I added a gentle reminder to your plan to connect with ${person.name}.`);
+    } else {
+      setReply(assistantReply(cleaned));
+    }
+    setRemovedParts([]);
+    setNotice(person && soundsRecent ? `Connection with ${person.name} logged.` : 'Thought captured.');
+  };
   const convert = () => { parts.forEach((part) => addTask({ title: part, project: 'Personal', due: 'Today', priority: 'medium' })); update((s) => ({ ...s, captures: s.captures.map((capture, index) => index === 0 ? { ...capture, converted: true } : capture) })); setNotice(`${parts.length} small steps added to your plan.`); };
 
   const toggleListen = () => {
@@ -635,7 +937,7 @@ function CapturePage({ app }: { app: ReturnType<typeof useAppState> }) {
     }
   };
 
-  return <div className="page-wrap"><div className="capture-page"><PageHeader eyebrow="No sorting required" title={<>Say it before you <span className="serif">lose it.</span></>} subtitle="A private landing place for the thought circling your head." /><section className="card capture-box"><textarea ref={textAreaRef} className="capture-input" placeholder="What's taking up a little too much room in your mind?" value={text} onChange={(event) => { setText(event.target.value); setReply(''); setRemovedParts([]); }} aria-label="Brain dump" data-testid="textarea-brain-dump" /><div className="capture-footer"><div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginTop: 14, flex: 1, padding: '20px 0' }}><button className={`voice-button-large ${listening ? 'listening' : ''}`} onClick={toggleListen} aria-label={listening ? 'Stop voice capture' : 'Start voice-style capture'} data-testid="button-voice-capture"><Mic size={32} /></button><span style={{ fontSize: 13, fontWeight: 500, color: 'hsl(var(--muted-foreground))', marginTop: 16 }}>{listening ? "Listening…" : "Tap to speak"}</span></div></div><div style={{ display: 'flex', justifyContent: 'flex-end', borderTop: '1px solid hsl(var(--border))', paddingTop: 16, marginTop: 10 }}><button className="button button-primary" onClick={save} disabled={!text.trim()} data-testid="button-capture-thought"><Sparkles size={15} /> Make sense of this</button></div></section>{reply && <div className="assistant-note" data-testid="text-assistant-response"><div className="assistant-symbol"><Sparkles size={14} /></div><p>{reply}<br /><span style={{ display: 'block', marginTop: 6, color: 'hsl(var(--muted-foreground))', fontSize: 11 }}>This is a small built-in reflection based on your words, not a connected external AI service.</span></p></div>}{reply && parts.length > 0 && <section className="card breakdown">{parts.length > 1 ? <h2 style={{ fontSize: 16, marginBottom: 16 }}>Want me to turn this into a realistic plan?</h2> : <div className="section-title"><h2>Possible small steps</h2><span>Nothing is committed yet</span></div>}{parts.map((part, index) => <div className="breakdown-row" key={`${part}-${index}`}><span className="priority-dot" /><span style={{ flex: 1 }}>{part}</span><button className="icon-button" onClick={() => setRemovedParts((current) => [...current, part])} aria-label={`Remove suggested step ${index + 1}`} data-testid={`button-remove-breakdown-${index}`}><X size={14} /></button></div>)}<div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14 }}><button className="button button-secondary" onClick={convert} data-testid="button-add-breakdown-to-plan"><ListChecks size={15} /> Add these to my plan</button></div></section>}<section style={{ marginTop: 35 }}><div className="section-title"><h2>Recent captures</h2><span>Only you can see these</span></div><div className="task-list">{state.captures.map((capture) => <div className="task-row" key={capture.id} data-testid={`row-capture-${capture.id}`}><div style={{ width: 22, height: 22, borderRadius: 7, background: 'hsl(var(--secondary))', display: 'grid', placeItems: 'center', color: 'hsl(var(--secondary-foreground))' }}><Brain size={13} /></div><div><div className="task-name" style={{ fontWeight: 500 }}>{capture.text}</div><div className="task-meta"><span>{capture.createdAt}</span>{capture.converted && <span className="task-tag">Added to plan</span>}</div></div><button className="icon-button" onClick={() => { update((s) => ({ ...s, captures: s.captures.filter((item) => item.id !== capture.id) })); setNotice('Capture deleted.'); }} aria-label="Delete capture" data-testid={`button-delete-capture-${capture.id}`}><Trash2 size={15} /></button></div>)}</div></section></div></div>;
+  return <div className="page-wrap"><div className="capture-page"><PageHeader eyebrow="No sorting required" title={<>Say it before you <span className="serif">lose it.</span></>} subtitle="A private landing place for the thought circling your head." /><section className="card capture-box"><textarea ref={textAreaRef} className="capture-input" placeholder="What's taking up a little too much room in your mind?" value={text} onChange={(event) => { setText(event.target.value); setReply(''); setReconnectPersonId(null); setRemovedParts([]); }} aria-label="Brain dump" data-testid="textarea-brain-dump" /><div className="capture-footer"><div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginTop: 14, flex: 1, padding: '20px 0' }}><button className={`voice-button-large ${listening ? 'listening' : ''}`} onClick={toggleListen} aria-label={listening ? 'Stop voice capture' : 'Start voice-style capture'} data-testid="button-voice-capture"><Mic size={32} /></button><span style={{ fontSize: 13, fontWeight: 500, color: 'hsl(var(--muted-foreground))', marginTop: 16 }}>{listening ? "Listening…" : "Tap to speak"}</span></div></div><div style={{ display: 'flex', justifyContent: 'flex-end', borderTop: '1px solid hsl(var(--border))', paddingTop: 16, marginTop: 10 }}><button className="button button-primary" onClick={save} disabled={!text.trim()} data-testid="button-capture-thought"><Sparkles size={15} /> Make sense of this</button></div></section>{reply && <div className="assistant-note" data-testid="text-assistant-response"><div className="assistant-symbol"><Sparkles size={14} /></div><p>{reply}<br /><span style={{ display: 'block', marginTop: 6, color: 'hsl(var(--muted-foreground))', fontSize: 11 }}>This is a small built-in reflection based on your words, not a connected external AI service.</span>{reconnectPersonId && <span className="assistant-actions"><button className="button button-secondary" onClick={() => { setText(`Draft a casual text to ${state.people.find((person) => person.id === reconnectPersonId)?.name ?? 'them'}`); setReply('A simple, warm note is usually enough. You can make it sound like you.'); }} data-testid="button-draft-reconnection">Draft a casual text</button><button className="button button-secondary" onClick={() => { const person = state.people.find((item) => item.id === reconnectPersonId); if (person) addTask({ title: `Call ${person.name}`, project: 'People & connections', due: 'Tomorrow', priority: 'low' }); setReply('I left a soft reminder for later.'); setNotice('Reminder added to your plan.'); }} data-testid="button-remind-reconnection">Remind me later</button><button className="button button-ghost" onClick={() => { setReconnectPersonId(null); setReply('Okay. I’ll leave it here without adding anything.'); }}>Not now</button></span>}</p></div>}{reply && parts.length > 0 && <section className="card breakdown">{parts.length > 1 ? <h2 style={{ fontSize: 16, marginBottom: 16 }}>Want me to turn this into a realistic plan?</h2> : <div className="section-title"><h2>Possible small steps</h2><span>Nothing is committed yet</span></div>}{parts.map((part, index) => <div className="breakdown-row" key={`${part}-${index}`}><span className="priority-dot" /><span style={{ flex: 1 }}>{part}</span><button className="icon-button" onClick={() => setRemovedParts((current) => [...current, part])} aria-label={`Remove suggested step ${index + 1}`} data-testid={`button-remove-breakdown-${index}`}><X size={14} /></button></div>)}<div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14 }}><button className="button button-secondary" onClick={convert} data-testid="button-add-breakdown-to-plan"><ListChecks size={15} /> Add these to my plan</button></div></section>}<section style={{ marginTop: 35 }}><div className="section-title"><h2>Recent captures</h2><span>Only you can see these</span></div><div className="task-list">{state.captures.map((capture) => <div className="task-row" key={capture.id} data-testid={`row-capture-${capture.id}`}><div style={{ width: 22, height: 22, borderRadius: 7, background: 'hsl(var(--secondary))', display: 'grid', placeItems: 'center', color: 'hsl(var(--secondary-foreground))' }}><Brain size={13} /></div><div><div className="task-name" style={{ fontWeight: 500 }}>{capture.text}</div><div className="task-meta"><span>{capture.createdAt}</span>{capture.converted && <span className="task-tag">Added to plan</span>}</div></div><button className="icon-button" onClick={() => { update((s) => ({ ...s, captures: s.captures.filter((item) => item.id !== capture.id) })); setNotice('Capture deleted.'); }} aria-label="Delete capture" data-testid={`button-delete-capture-${capture.id}`}><Trash2 size={15} /></button></div>)}</div></section></div></div>;
 }
 
 function Me({ app }: { app: ReturnType<typeof useAppState> }) {
@@ -684,10 +986,31 @@ function Me({ app }: { app: ReturnType<typeof useAppState> }) {
   </div></section><section className="card settings-card"><h2>Customize Today</h2><p>Reorder or hide sections on your Today view.</p><div className="stack" style={{ gap: 0, marginTop: 12 }}>{activeSections.map((s, idx) => (<div key={s} className="setting-row" style={{ padding: '10px 0', borderBottom: '1px solid hsl(var(--border))', borderTop: 'none' }}><div style={{ display: 'flex', alignItems: 'center', gap: 12 }}><button className="icon-button" style={{ width: 32, height: 32, minWidth: 32, minHeight: 32 }} onClick={() => { update(st => ({ ...st, preferences: { ...st.preferences, sectionOrder: st.preferences.sectionOrder.filter(x => x !== s) }})); }}><Check size={16} color="hsl(var(--primary))" /></button><strong style={{ fontSize: 13 }}>{sectionLabels[s] || s}</strong></div><div style={{ display: 'flex', gap: 4 }}><button className="icon-button" style={{ width: 32, height: 32, minWidth: 32, minHeight: 32 }} disabled={idx === 0} onClick={() => { const arr = [...state.preferences.sectionOrder]; [arr[idx], arr[idx - 1]] = [arr[idx - 1], arr[idx]]; update(st => ({ ...st, preferences: { ...st.preferences, sectionOrder: arr }})); }}><ChevronUp size={16} /></button><button className="icon-button" style={{ width: 32, height: 32, minWidth: 32, minHeight: 32 }} disabled={idx === activeSections.length - 1} onClick={() => { const arr = [...state.preferences.sectionOrder]; [arr[idx], arr[idx + 1]] = [arr[idx + 1], arr[idx]]; update(st => ({ ...st, preferences: { ...st.preferences, sectionOrder: arr }})); }}><ChevronDown size={16} /></button></div></div>))}{inactiveSections.map(s => (<div key={s} className="setting-row" style={{ padding: '10px 0', borderBottom: '1px solid hsl(var(--border))', borderTop: 'none', opacity: 0.6 }}><div style={{ display: 'flex', alignItems: 'center', gap: 12 }}><button className="icon-button" style={{ width: 32, height: 32, minWidth: 32, minHeight: 32 }} onClick={() => { update(st => ({ ...st, preferences: { ...st.preferences, sectionOrder: [...st.preferences.sectionOrder, s] }})); }}><Plus size={16} /></button><strong style={{ fontSize: 13 }}>{sectionLabels[s] || s}</strong></div></div>))}</div></section></div><div className="stack"><section className="card settings-card"><h2>Connected Services</h2><p>Link external tools to shape your day.</p><div className="setting-row"><div><strong>Calendar</strong><span>{state.preferences.calendarConnected === 'none' ? 'Not connected' : `Connected`}</span></div><select className="field" style={{ width: 'auto', minWidth: 120, height: 44, padding: '0 12px' }} value={state.preferences.calendarConnected || 'none'} onChange={e => update(s => ({ ...s, preferences: { ...s.preferences, calendarConnected: e.target.value as any } }))}><option value="none">None</option><option value="google">Google Calendar</option><option value="outlook">Outlook</option></select></div></section><section className="card settings-card"><h2>Your privacy</h2><p>My Day is designed to feel personal without being mysterious.</p><div className="soft-card" style={{ padding: 15, display: 'flex', gap: 11, alignItems: 'flex-start' }}><ShieldCheck size={18} color="hsl(var(--primary))" /><div><strong style={{ fontSize: 12 }}>Saved to the cloud, tied to this browser</strong><p style={{ margin: '4px 0 0', fontSize: 11, lineHeight: 1.5 }}>Your tasks, captures, and preferences are stored in a private database and survive page refreshes and browser restarts. They are linked to a cookie in this browser — clearing cookies or using a different device will start fresh with sample data.</p></div></div><div className="setting-row"><div><strong>Clear all day data</strong><span>Return to the welcoming sample day.</span></div><button className="button button-danger" onClick={reset} data-testid="button-reset-data"><RotateCcw size={14} /> Reset</button></div></section><section className="soft-card" style={{ padding: 20 }}><div style={{ display: 'flex', gap: 11 }}><Keyboard size={17} color="hsl(var(--primary))" /><div><strong style={{ fontSize: 12 }}>A few useful keys</strong><p style={{ margin: '7px 0 0', color: 'hsl(var(--muted-foreground))', fontSize: 11, lineHeight: 1.65 }}>Use Command + Enter to save a quick capture. Your attention is the main interface.</p></div></div></section></div></div></div>;
 }
 
+function DuplicateSurface({ app }: { app: ReturnType<typeof useAppState> }) {
+  const [location] = useLocation();
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const { state, update, removeTask, setNotice } = app;
+  const { data: calendarEvents } = useGetCalendarEvents({ date: localDateKey(new Date()) });
+
+  if (location !== '/plan' || !state) return null;
+
+  const events = (calendarEvents ?? []) as Array<{ id: string; title: string; start: string; allDay: boolean }>;
+  const pairs = findDuplicatePairs(state.tasks, events).filter((pair) => !(state.preferences.dismissedDuplicates ?? []).includes(pair.id));
+  const dismiss = (id: string) => update((current) => ({ ...current, preferences: { ...current.preferences, dismissedDuplicates: Array.from(new Set([...(current.preferences.dismissedDuplicates ?? []), id])) } }));
+  const remove = (pair: DuplicatePair) => {
+    if (!pair.removeTaskId) return;
+    removeTask(pair.removeTaskId);
+    dismiss(pair.id);
+    setNotice(`${pair.removeTaskTitle || 'Task'} removed.`);
+  };
+
+  return <>{pairs.length > 0 && <button className="duplicate-banner" onClick={() => setReviewOpen(true)} data-testid="button-review-duplicates"><div className="duplicate-banner-icon"><HeartHandshake size={16} /></div><span><strong>We noticed a couple of things that might overlap.</strong><small>Want to tidy them up?</small></span><ArrowRight size={16} /></button>}{reviewOpen && pairs.length > 0 && <DuplicateReviewModal pairs={pairs} onClose={() => setReviewOpen(false)} onKeepBoth={dismiss} onRemoveTask={remove} />}</>;
+}
+
 function NotFoundView() { return <div className="page-wrap"><div className="empty-state" style={{ marginTop: '15vh' }}><Compass size={25} /><h1 className="page-title" style={{ fontSize: 35 }}>A quiet dead end.</h1><p>That page is not part of today.</p><Link className="button button-primary" href="/" data-testid="link-back-home">Back to today</Link></div></div>; }
 
 function Router({ app }: { app: ReturnType<typeof useAppState> }) {
-  return <Shell><ErrorBoundary resetKey={window.location.pathname}><Switch><Route path="/" component={() => <Home app={app} />} /><Route path="/plan" component={() => <Plan app={app} />} /><Route path="/projects" component={() => <Projects app={app} />} /><Route path="/capture" component={() => <CapturePage app={app} />} /><Route path="/me" component={() => <Me app={app} />} /><Route component={NotFoundView} /></Switch></ErrorBoundary></Shell>;
+  return <Shell><ErrorBoundary resetKey={window.location.pathname}><Switch><Route path="/" component={() => <Home app={app} />} /><Route path="/plan" component={() => <Plan app={app} />} /><Route path="/people" component={() => <People app={app} />} /><Route path="/projects" component={() => <Projects app={app} />} /><Route path="/capture" component={() => <CapturePage app={app} />} /><Route path="/me" component={() => <Me app={app} />} /><Route component={NotFoundView} /></Switch></ErrorBoundary></Shell>;
 }
 
 /** Inner app — runs inside QueryClientProvider so hooks work */
@@ -707,6 +1030,7 @@ function AppInner() {
     <TooltipProvider>
       <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
         <Router app={app} />
+        <DuplicateSurface app={app} />
       </WouterRouter>
       <Toaster />
       {app.notice && <div className="toast-note" role="status" data-testid="status-toast">{app.notice}</div>}

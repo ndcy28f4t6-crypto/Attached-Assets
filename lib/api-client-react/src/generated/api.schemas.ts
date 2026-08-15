@@ -125,6 +125,7 @@ export interface Preferences {
   fontStyle: PreferencesFontStyle;
   calendarConnected: PreferencesCalendarConnected;
   calendarPrefs?: PreferencesCalendarPrefs;
+  dismissedDuplicates?: string[];
 }
 
 export interface WaitingFor {
@@ -134,12 +135,52 @@ export interface WaitingFor {
   addedAt: string;
 }
 
+export interface ImportantDate {
+  id: string;
+  label: string;
+  date: string;
+}
+
+export interface ConnectionLog {
+  id: string;
+  date: string;
+  note?: string;
+  method?: string;
+}
+
+export type PersonFrequency = typeof PersonFrequency[keyof typeof PersonFrequency];
+
+
+export const PersonFrequency = {
+  weekly: 'weekly',
+  biweekly: 'biweekly',
+  monthly: 'monthly',
+  custom: 'custom',
+  none: 'none',
+} as const;
+
+export interface Person {
+  id: string;
+  name: string;
+  relationship: string;
+  contactMethod: string;
+  frequency: PersonFrequency;
+  customDays?: number;
+  birthday?: string;
+  importantDates: ImportantDate[];
+  notes: string;
+  lastConnectedAt?: string;
+  reminderSnoozedUntil?: string;
+  connections: ConnectionLog[];
+}
+
 export interface AppState {
   tasks: Task[];
   projects: Project[];
   captures: Capture[];
   preferences: Preferences;
   waitingFor: WaitingFor[];
+  people: Person[];
 }
 
 export type GetCalendarEventsParams = {

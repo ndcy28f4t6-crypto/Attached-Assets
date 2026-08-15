@@ -103,13 +103,37 @@ export const GetAppStateResponse = zod.object({
   "calendarPrefs": zod.record(zod.string(), zod.object({
   "visible": zod.boolean(),
   "color": zod.string().nullish()
-})).optional()
+})).optional(),
+  "dismissedDuplicates": zod.array(zod.string()).optional()
 }),
   "waitingFor": zod.array(zod.object({
   "id": zod.string(),
   "person": zod.string(),
   "item": zod.string(),
   "addedAt": zod.string()
+})),
+  "people": zod.array(zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "relationship": zod.string(),
+  "contactMethod": zod.string(),
+  "frequency": zod.enum(['weekly', 'biweekly', 'monthly', 'custom', 'none']),
+  "customDays": zod.number().optional(),
+  "birthday": zod.string().optional(),
+  "importantDates": zod.array(zod.object({
+  "id": zod.string(),
+  "label": zod.string(),
+  "date": zod.string()
+})),
+  "notes": zod.string(),
+  "lastConnectedAt": zod.string().optional(),
+  "reminderSnoozedUntil": zod.string().optional(),
+  "connections": zod.array(zod.object({
+  "id": zod.string(),
+  "date": zod.string(),
+  "note": zod.string().optional(),
+  "method": zod.string().optional()
+}))
 }))
 })
 
@@ -153,13 +177,37 @@ export const SaveAppStateBody = zod.object({
   "calendarPrefs": zod.record(zod.string(), zod.object({
   "visible": zod.boolean(),
   "color": zod.string().nullish()
-})).optional()
+})).optional(),
+  "dismissedDuplicates": zod.array(zod.string()).optional()
 }),
   "waitingFor": zod.array(zod.object({
   "id": zod.string(),
   "person": zod.string(),
   "item": zod.string(),
   "addedAt": zod.string()
+})),
+  "people": zod.array(zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "relationship": zod.string(),
+  "contactMethod": zod.string(),
+  "frequency": zod.enum(['weekly', 'biweekly', 'monthly', 'custom', 'none']),
+  "customDays": zod.number().optional(),
+  "birthday": zod.string().optional(),
+  "importantDates": zod.array(zod.object({
+  "id": zod.string(),
+  "label": zod.string(),
+  "date": zod.string()
+})),
+  "notes": zod.string(),
+  "lastConnectedAt": zod.string().optional(),
+  "reminderSnoozedUntil": zod.string().optional(),
+  "connections": zod.array(zod.object({
+  "id": zod.string(),
+  "date": zod.string(),
+  "note": zod.string().optional(),
+  "method": zod.string().optional()
+}))
 }))
 })
 
@@ -198,13 +246,37 @@ export const SaveAppStateResponse = zod.object({
   "calendarPrefs": zod.record(zod.string(), zod.object({
   "visible": zod.boolean(),
   "color": zod.string().nullish()
-})).optional()
+})).optional(),
+  "dismissedDuplicates": zod.array(zod.string()).optional()
 }),
   "waitingFor": zod.array(zod.object({
   "id": zod.string(),
   "person": zod.string(),
   "item": zod.string(),
   "addedAt": zod.string()
+})),
+  "people": zod.array(zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "relationship": zod.string(),
+  "contactMethod": zod.string(),
+  "frequency": zod.enum(['weekly', 'biweekly', 'monthly', 'custom', 'none']),
+  "customDays": zod.number().optional(),
+  "birthday": zod.string().optional(),
+  "importantDates": zod.array(zod.object({
+  "id": zod.string(),
+  "label": zod.string(),
+  "date": zod.string()
+})),
+  "notes": zod.string(),
+  "lastConnectedAt": zod.string().optional(),
+  "reminderSnoozedUntil": zod.string().optional(),
+  "connections": zod.array(zod.object({
+  "id": zod.string(),
+  "date": zod.string(),
+  "note": zod.string().optional(),
+  "method": zod.string().optional()
+}))
 }))
 })
 

@@ -6,6 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { Capture } from './capture';
+import type { Person } from './person';
 import type { Preferences } from './preferences';
 import type { Project } from './project';
 import type { Task } from './task';
@@ -17,4 +18,5 @@ export interface AppState {
   captures: Capture[];
   preferences: Preferences;
   waitingFor: WaitingFor[];
+  people: Person[];
 }

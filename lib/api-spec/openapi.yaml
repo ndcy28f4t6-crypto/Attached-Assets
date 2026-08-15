@@ -267,6 +267,10 @@ components:
           type: object
           additionalProperties:
             $ref: "#/components/schemas/CalendarPref"
+        dismissedDuplicates:
+          type: array
+          items:
+            type: string
     WaitingFor:
       type: object
       required: [id, person, item, addedAt]
@@ -279,9 +283,64 @@ components:
           type: string
         addedAt:
           type: string
+    ImportantDate:
+      type: object
+      required: [id, label, date]
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        date:
+          type: string
+    ConnectionLog:
+      type: object
+      required: [id, date]
+      properties:
+        id:
+          type: string
+        date:
+          type: string
+        note:
+          type: string
+        method:
+          type: string
+    Person:
+      type: object
+      required: [id, name, relationship, contactMethod, frequency, importantDates, notes, connections]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        relationship:
+          type: string
+        contactMethod:
+          type: string
+        frequency:
+          type: string
+          enum: [weekly, biweekly, monthly, custom, none]
+        customDays:
+          type: number
+        birthday:
+          type: string
+        importantDates:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImportantDate"
+        notes:
+          type: string
+        lastConnectedAt:
+          type: string
+        reminderSnoozedUntil:
+          type: string
+        connections:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConnectionLog"
     AppState:
       type: object
-      required: [tasks, projects, captures, preferences, waitingFor]
+      required: [tasks, projects, captures, preferences, waitingFor, people]
       properties:
         tasks:
           type: array
@@ -301,3 +360,7 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/WaitingFor"
+        people:
+          type: array
+          items:
+            $ref: "#/components/schemas/Person"

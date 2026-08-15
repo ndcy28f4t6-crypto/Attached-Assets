@@ -36,6 +36,7 @@ const seedState = {
     calendarConnected: 'none',
   },
   waitingFor: [],
+  people: [],
 };
 
 // GET /app/state — returns state scoped to the caller's anonymous session
