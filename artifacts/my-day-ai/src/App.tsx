@@ -1,5 +1,6 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from '@/hooks/use-toast';
+import { flushQueued as flushQueuedUtil, saveWithRetry, QUEUED_SAVE_KEY } from '@/lib/save-queue';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
@@ -31,8 +32,7 @@ const queryClient = new QueryClient();
 const LEGACY_STORAGE_KEY = 'my-day-ai-state-v1';
 // Flag so we only attempt the migration once per browser
 const MIGRATION_FLAG_KEY = 'my-day-ai-migrated-v1';
-// sessionStorage key for changes queued during a server outage
-const QUEUED_SAVE_KEY = 'my-day-ai-queued-save';
+// QUEUED_SAVE_KEY is re-exported from @/lib/save-queue (imported above)
 
 const QUOTES = [
   "Progress, not perfection.",
@@ -185,16 +185,13 @@ function useAppState() {
 
   // Try to flush any changes that were queued during an outage
   const flushQueued = useCallback(async () => {
-    const raw = sessionStorage.getItem(QUEUED_SAVE_KEY);
-    if (!raw) return;
-    try {
-      const data = JSON.parse(raw) as ServerAppState;
-      await saveToServerAsync({ data });
-      sessionStorage.removeItem(QUEUED_SAVE_KEY);
+    await flushQueuedUtil(
+      (data) => saveToServerAsync({ data: data as ServerAppState }),
+      { storage: sessionStorage, toast },
+    );
+    // If the queue was cleared, the toast flag can be reset on next failure
+    if (!sessionStorage.getItem(QUEUED_SAVE_KEY)) {
       queuedToastShownRef.current = false;
-      toast({ title: 'Changes synced', description: 'Your queued changes have been saved to the server.' });
-    } catch {
-      // Still offline — will retry on next interval tick or next save attempt
     }
   }, [saveToServerAsync]);
 
@@ -266,67 +263,50 @@ function useAppState() {
 
       // Include the last known revision so the server can detect concurrent writes.
       const data = { ...state, _clientRevision: serverRevisionRef.current } as unknown as ServerAppState;
-      let saved = false;
 
-      for (let attempt = 1; attempt <= 3; attempt++) {
+      /**
+       * saveFn passed to saveWithRetry.  On a 409 Conflict it merges states and
+       * retries once (transparently, so saveWithRetry still counts only 3 network
+       * attempts).  On any other error it rethrows so saveWithRetry can back off
+       * and queue the payload after all retries are exhausted.
+       */
+      const attemptSave = async (payload: unknown): Promise<void> => {
         try {
-          const response = await saveToServerAsync({ data });
-          saved = true;
-          // Track the new revision so the next save is conditional against it.
+          const response = await saveToServerAsync({ data: payload as ServerAppState });
           const newRev = extractRevision(response);
           if (newRev !== null) serverRevisionRef.current = newRev;
-          // Clear any queued save — we just successfully wrote the latest state
-          if (sessionStorage.getItem(QUEUED_SAVE_KEY)) {
-            sessionStorage.removeItem(QUEUED_SAVE_KEY);
-            queuedToastShownRef.current = false;
-            toast({ title: 'Changes synced', description: 'Your queued changes have been saved.' });
-          }
-          break;
         } catch (err: unknown) {
-          // ── 409 Conflict ─────────────────────────────────────────────────────
-          // Another tab saved before us.  Merge the two states and retry once.
-          if (isConflictError(err)) {
-            const conflictErr = err as { data: unknown };
-            const serverData = conflictErr.data;
-            const serverRev = extractRevision(serverData);
-            const serverAppState = toLocalState(serverData as ServerAppState);
-            const mergedTasks = mergeTasks(serverAppState.tasks, state.tasks);
-            const mergedState: AppState = {
-              ...serverAppState,
-              tasks: mergedTasks,
-              preferences: state.preferences, // keep this tab's preference changes
-            };
-            if (serverRev !== null) serverRevisionRef.current = serverRev;
-            try {
-              const mergePayload = { ...mergedState, _clientRevision: serverRev } as unknown as ServerAppState;
-              const mergeResponse = await saveToServerAsync({ data: mergePayload });
-              const mergeRev = extractRevision(mergeResponse);
-              if (mergeRev !== null) serverRevisionRef.current = mergeRev;
-              // Update local state to the merged result without triggering another save
-              suppressNextSaveRef.current = true;
-              setState(mergedState);
-              saved = true;
-            } catch {
-              // Merge retry failed — fall through to queue the pending state
-            }
-            break; // Don't continue the retry loop after a 409
-          }
-          // ── Network error — exponential backoff ──────────────────────────────
-          if (attempt < 3) {
-            await new Promise<void>((resolve) => setTimeout(resolve, 300 * Math.pow(2, attempt - 1)));
-          }
+          if (!isConflictError(err)) throw err; // let saveWithRetry handle network errors
+
+          // ── 409 Conflict: another tab saved first ─────────────────────────────
+          const conflictErr = err as { data: unknown };
+          const serverData = conflictErr.data;
+          const serverRev = extractRevision(serverData);
+          const serverAppState = toLocalState(serverData as ServerAppState);
+          const mergedTasks = mergeTasks(serverAppState.tasks, state.tasks);
+          const mergedState: AppState = {
+            ...serverAppState,
+            tasks: mergedTasks,
+            preferences: state.preferences,
+          };
+          if (serverRev !== null) serverRevisionRef.current = serverRev;
+
+          // Retry once with the merged state; on failure rethrow so saveWithRetry queues it
+          const mergePayload = { ...mergedState, _clientRevision: serverRev } as unknown as ServerAppState;
+          const mergeResponse = await saveToServerAsync({ data: mergePayload }); // throws → caught by saveWithRetry
+          const mergeRev = extractRevision(mergeResponse);
+          if (mergeRev !== null) serverRevisionRef.current = mergeRev;
+          suppressNextSaveRef.current = true;
+          setState(mergedState);
         }
-      }
-      if (!saved) {
-        sessionStorage.setItem(QUEUED_SAVE_KEY, JSON.stringify(data));
-        if (!queuedToastShownRef.current) {
-          queuedToastShownRef.current = true;
-          toast({
-            title: 'Changes saved locally',
-            description: "Couldn't reach the server. Your changes are queued and will sync automatically.",
-          });
-        }
-      }
+      };
+
+      const result = await saveWithRetry(attemptSave, data, {
+        storage: sessionStorage,
+        toast,
+        queuedToastShown: queuedToastShownRef.current,
+      });
+      queuedToastShownRef.current = result.queuedToastShown;
     }, 600);
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
