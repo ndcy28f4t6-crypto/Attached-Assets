@@ -22,6 +22,8 @@ export interface CalendarEvent {
   calendarId?: string;
   /** @nullable */
   color?: string | null;
+  /** @nullable */
+  calendarColor?: string | null;
 }
 
 export interface CalendarStatus {

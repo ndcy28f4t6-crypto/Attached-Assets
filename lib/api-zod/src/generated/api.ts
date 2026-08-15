@@ -33,7 +33,8 @@ export const GetCalendarEventsResponseItem = zod.object({
   "location": zod.string().nullish(),
   "description": zod.string().nullish(),
   "calendarId": zod.string().optional(),
-  "color": zod.string().nullish()
+  "color": zod.string().nullish(),
+  "calendarColor": zod.string().nullish()
 })
 export const GetCalendarEventsResponse = zod.array(GetCalendarEventsResponseItem)
 

@@ -129,6 +129,8 @@ components:
           type: string
         color:
           type: ["string", "null"]
+        calendarColor:
+          type: ["string", "null"]
     CalendarStatus:
       type: object
       required: [connected, provider]
