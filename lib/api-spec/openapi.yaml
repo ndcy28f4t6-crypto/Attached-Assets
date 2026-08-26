@@ -16,7 +16,60 @@ tags:
     description: App state operations
   - name: auth
     description: Authentication and connected account management
+  - name: assistant
+    description: Voice scheduling assistant operations
 paths:
+  /assistant/parse:
+    post:
+      operationId: parseAssistantTranscript
+      tags: [assistant]
+      summary: Turn a transcript into a scheduled event
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssistantParseRequest"
+      responses:
+        "200":
+          description: Structured scheduled event
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistantParseResponse"
+        "400":
+          description: Invalid transcript
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: AI parsing unavailable or returned invalid data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /assistant/reminders:
+    get:
+      operationId: getAssistantReminders
+      tags: [assistant]
+      summary: Get reminders that are due for this session
+      parameters:
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: string
+          description: ISO timestamp; only reminders due at or after this time are returned
+      responses:
+        "200":
+          description: Due reminders
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ScheduledEvent"
   /auth/accounts:
     get:
       operationId: getAuthAccounts
@@ -70,6 +123,18 @@ paths:
           schema:
             type: string
           description: ISO date string (YYYY-MM-DD), defaults to today
+        - name: start
+          in: query
+          required: false
+          schema:
+            type: string
+          description: ISO start timestamp for a range query
+        - name: end
+          in: query
+          required: false
+          schema:
+            type: string
+          description: ISO end timestamp for a range query
       responses:
         "200":
           description: List of calendar events
@@ -257,6 +322,51 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/CalendarAccount"
+    AssistantParseRequest:
+      type: object
+      required: [transcript]
+      properties:
+        transcript:
+          type: string
+          minLength: 1
+        now:
+          type: string
+          description: Current browser time used to resolve relative dates
+    AssistantParseResponse:
+      type: object
+      required: [task_title, start_datetime, end_datetime, reminder_datetime]
+      properties:
+        task_title:
+          type: string
+        start_datetime:
+          type: string
+          format: date-time
+        end_datetime:
+          type: string
+          format: date-time
+        reminder_datetime:
+          type: string
+          format: date-time
+    ScheduledEvent:
+      type: object
+      required: [id, task_title, start_datetime, end_datetime, reminder_datetime, created_at]
+      properties:
+        id:
+          type: string
+        task_title:
+          type: string
+        start_datetime:
+          type: string
+          format: date-time
+        end_datetime:
+          type: string
+          format: date-time
+        reminder_datetime:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
     ErrorResponse:
       type: object
       required: [error]
@@ -409,7 +519,7 @@ components:
             $ref: "#/components/schemas/ConnectionLog"
     AppState:
       type: object
-      required: [tasks, projects, captures, preferences, waitingFor, people]
+      required: [tasks, projects, captures, preferences, waitingFor, people, scheduledEvents]
       properties:
         tasks:
           type: array
@@ -433,3 +543,7 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Person"
+        scheduledEvents:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScheduledEvent"

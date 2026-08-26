@@ -9,6 +9,43 @@ import * as zod from 'zod';
 
 
 /**
+ * @summary Turn a transcript into a scheduled event
+ */
+
+
+
+export const ParseAssistantTranscriptBody = zod.object({
+  "transcript": zod.string().min(1),
+  "now": zod.string().optional().describe('Current browser time used to resolve relative dates')
+})
+
+export const ParseAssistantTranscriptResponse = zod.object({
+  "task_title": zod.string(),
+  "start_datetime": zod.coerce.date(),
+  "end_datetime": zod.coerce.date(),
+  "reminder_datetime": zod.coerce.date()
+})
+
+
+/**
+ * @summary Get reminders that are due for this session
+ */
+export const GetAssistantRemindersQueryParams = zod.object({
+  "since": zod.coerce.string().optional().describe('ISO timestamp; only reminders due at or after this time are returned')
+})
+
+export const GetAssistantRemindersResponseItem = zod.object({
+  "id": zod.string(),
+  "task_title": zod.string(),
+  "start_datetime": zod.coerce.date(),
+  "end_datetime": zod.coerce.date(),
+  "reminder_datetime": zod.coerce.date(),
+  "created_at": zod.coerce.date()
+})
+export const GetAssistantRemindersResponse = zod.array(GetAssistantRemindersResponseItem)
+
+
+/**
  * @summary List connected Google accounts for this session
  */
 export const GetAuthAccountsResponseItem = zod.object({
@@ -41,7 +78,9 @@ export const HealthCheckResponse = zod.object({
  * @summary Get calendar events for a date range
  */
 export const GetCalendarEventsQueryParams = zod.object({
-  "date": zod.coerce.string().optional().describe('ISO date string (YYYY-MM-DD), defaults to today')
+  "date": zod.coerce.string().optional().describe('ISO date string (YYYY-MM-DD), defaults to today'),
+  "start": zod.coerce.string().optional().describe('ISO start timestamp for a range query'),
+  "end": zod.coerce.string().optional().describe('ISO end timestamp for a range query')
 })
 
 export const GetCalendarEventsResponseItem = zod.object({
@@ -168,6 +207,14 @@ export const GetAppStateResponse = zod.object({
   "note": zod.string().optional(),
   "method": zod.string().optional()
 }))
+})),
+  "scheduledEvents": zod.array(zod.object({
+  "id": zod.string(),
+  "task_title": zod.string(),
+  "start_datetime": zod.coerce.date(),
+  "end_datetime": zod.coerce.date(),
+  "reminder_datetime": zod.coerce.date(),
+  "created_at": zod.coerce.date()
 }))
 })
 
@@ -242,6 +289,14 @@ export const SaveAppStateBody = zod.object({
   "note": zod.string().optional(),
   "method": zod.string().optional()
 }))
+})),
+  "scheduledEvents": zod.array(zod.object({
+  "id": zod.string(),
+  "task_title": zod.string(),
+  "start_datetime": zod.coerce.date(),
+  "end_datetime": zod.coerce.date(),
+  "reminder_datetime": zod.coerce.date(),
+  "created_at": zod.coerce.date()
 }))
 })
 
@@ -311,6 +366,14 @@ export const SaveAppStateResponse = zod.object({
   "note": zod.string().optional(),
   "method": zod.string().optional()
 }))
+})),
+  "scheduledEvents": zod.array(zod.object({
+  "id": zod.string(),
+  "task_title": zod.string(),
+  "start_datetime": zod.coerce.date(),
+  "end_datetime": zod.coerce.date(),
+  "reminder_datetime": zod.coerce.date(),
+  "created_at": zod.coerce.date()
 }))
 })
 

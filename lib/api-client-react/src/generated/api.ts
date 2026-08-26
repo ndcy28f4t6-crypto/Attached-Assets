@@ -21,15 +21,19 @@ import type {
 
 import type {
   AppState,
+  AssistantParseRequest,
+  AssistantParseResponse,
   CalendarAccount,
   CalendarEvent,
   CalendarMeta,
   CalendarStatus,
   ErrorResponse,
+  GetAssistantRemindersParams,
   GetCalendarEventsParams,
   GetCalendarWeekSummary200,
   GetCalendarWeekSummaryParams,
-  HealthStatus
+  HealthStatus,
+  ScheduledEvent
 } from './api.schemas';
 
 import { customFetch } from '../custom-fetch';
@@ -58,6 +62,161 @@ const withQueryKey = <T extends object, K>(query: T, queryKey: K): T & { queryKe
   }
   return result;
 };
+
+export const getParseAssistantTranscriptUrl = () => {
+
+
+
+
+  return `/api/assistant/parse`
+}
+
+/**
+ * @summary Turn a transcript into a scheduled event
+ */
+export const parseAssistantTranscript = async (assistantParseRequest: AssistantParseRequest, options?: Parameters<typeof customFetch>[1]): Promise<AssistantParseResponse> => {
+
+  return customFetch<AssistantParseResponse>(getParseAssistantTranscriptUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(assistantParseRequest)
+  }
+);}
+
+
+
+
+
+export const getParseAssistantTranscriptMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof parseAssistantTranscript>>, TError,{data: BodyType<AssistantParseRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof parseAssistantTranscript>>, TError,{data: BodyType<AssistantParseRequest>}, TContext> => {
+
+const mutationKey = ['parseAssistantTranscript'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof parseAssistantTranscript>>, {data: BodyType<AssistantParseRequest>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  parseAssistantTranscript(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type ParseAssistantTranscriptMutationResult = NonNullable<Awaited<ReturnType<typeof parseAssistantTranscript>>>
+    export type ParseAssistantTranscriptMutationBody = BodyType<AssistantParseRequest>
+    export type ParseAssistantTranscriptMutationError = ErrorType<ErrorResponse>
+
+    /**
+ * @summary Turn a transcript into a scheduled event
+ */
+export const useParseAssistantTranscript = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof parseAssistantTranscript>>, TError,{data: BodyType<AssistantParseRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof parseAssistantTranscript>>,
+        TError,
+        {data: BodyType<AssistantParseRequest>},
+        TContext
+      > => {
+      return useMutation(getParseAssistantTranscriptMutationOptions(options));
+    }
+
+export const getGetAssistantRemindersUrl = (params?: GetAssistantRemindersParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/assistant/reminders?${stringifiedParams}` : `/api/assistant/reminders`
+}
+
+/**
+ * @summary Get reminders that are due for this session
+ */
+export const getAssistantReminders = async (params?: GetAssistantRemindersParams, options?: Parameters<typeof customFetch>[1]): Promise<ScheduledEvent[]> => {
+
+  return customFetch<ScheduledEvent[]>(getGetAssistantRemindersUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetAssistantRemindersQueryKey = (params?: GetAssistantRemindersParams,) => {
+    return [
+    `/api/assistant/reminders`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getGetAssistantRemindersQueryOptions = <TData = Awaited<ReturnType<typeof getAssistantReminders>>, TError = ErrorType<unknown>>(params?: GetAssistantRemindersParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getAssistantReminders>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetAssistantRemindersQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getAssistantReminders>>> = ({ signal }) => getAssistantReminders(params, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getAssistantReminders>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetAssistantRemindersQueryResult = NonNullable<Awaited<ReturnType<typeof getAssistantReminders>>>
+export type GetAssistantRemindersQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Get reminders that are due for this session
+ */
+
+export function useGetAssistantReminders<TData = Awaited<ReturnType<typeof getAssistantReminders>>, TError = ErrorType<unknown>>(
+ params?: GetAssistantRemindersParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getAssistantReminders>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetAssistantRemindersQueryOptions(params,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
 
 export const getGetAuthAccountsUrl = () => {
 

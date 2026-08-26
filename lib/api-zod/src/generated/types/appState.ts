@@ -9,6 +9,7 @@ import type { Capture } from './capture';
 import type { Person } from './person';
 import type { Preferences } from './preferences';
 import type { Project } from './project';
+import type { ScheduledEvent } from './scheduledEvent';
 import type { Task } from './task';
 import type { WaitingFor } from './waitingFor';
 
@@ -19,4 +20,5 @@ export interface AppState {
   preferences: Preferences;
   waitingFor: WaitingFor[];
   people: Person[];
+  scheduledEvents: ScheduledEvent[];
 }

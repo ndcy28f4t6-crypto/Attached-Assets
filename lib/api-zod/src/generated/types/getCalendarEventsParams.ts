@@ -11,4 +11,12 @@ export type GetCalendarEventsParams = {
  * ISO date string (YYYY-MM-DD), defaults to today
  */
 date?: string;
+/**
+ * ISO start timestamp for a range query
+ */
+start?: string;
+/**
+ * ISO end timestamp for a range query
+ */
+end?: string;
 };

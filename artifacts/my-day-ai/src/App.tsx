@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { VisualCalendar } from '@/components/visual-calendar';
 import {
   Archive, ArrowLeft, ArrowRight, Bell, Brain, Calendar, CalendarClock, CalendarDays, Cake, Check,
   CheckCircle2, ChevronDown, ChevronUp, CircleHelp, ClipboardList, Clock3, Command, Compass,
@@ -23,6 +24,11 @@ import {
   useSaveAppState,
   useGetAuthAccounts,
   useDeleteAuthAccountsId,
+  useParseAssistantTranscript,
+  useGetAssistantReminders,
+  getGetAssistantRemindersQueryKey,
+  type AssistantParseResponse,
+  type CalendarEvent,
 } from '@workspace/api-client-react';
 import type { AppState as ServerAppState } from '@workspace/api-client-react';
 
@@ -69,6 +75,22 @@ type Task = {
 };
 type Project = { id: string; name: string; description: string; color: string; goal: string };
 type Capture = { id: string; text: string; createdAt: string; converted: boolean };
+type ScheduledEvent = { id: string; task_title: string; start_datetime: string; end_datetime: string; reminder_datetime: string; created_at: string };
+type SpeechRecognitionResultEvent = Event & {
+  resultIndex: number;
+  results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }>;
+};
+type BrowserSpeechRecognition = {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((event: SpeechRecognitionResultEvent) => void) | null;
+  onerror: ((event: Event & { error: string }) => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+};
+type BrowserSpeechRecognitionConstructor = new () => BrowserSpeechRecognition;
 type ImportantDate = { id: string; label: string; date: string };
 type ConnectionLog = { id: string; date: string; note?: string; method?: string };
 type Person = {
@@ -87,7 +109,7 @@ type Person = {
 };
 type Preferences = { dark: boolean; accent: string; memory: boolean; reminders: boolean; sectionOrder: string[]; fontStyle: 'modern' | 'classic' | 'rounded'; calendarConnected: 'none' | 'google' | 'outlook'; calendarPrefs?: Record<string, { visible: boolean; color: string | null }>; dismissedDuplicates?: string[] };
 type WaitingFor = { id: string; person: string; item: string; addedAt: string };
-type AppState = { tasks: Task[]; projects: Project[]; captures: Capture[]; preferences: Preferences; waitingFor: WaitingFor[]; people: Person[] };
+type AppState = { tasks: Task[]; projects: Project[]; captures: Capture[]; preferences: Preferences; waitingFor: WaitingFor[]; people: Person[]; scheduledEvents: ScheduledEvent[] };
 
 const defaultPreferences: Preferences = {
   dark: false, accent: '#e88870', memory: true, reminders: true,
@@ -109,6 +131,7 @@ function readLegacyLocalStorage(): AppState | null {
     if (!parsed.preferences.dismissedDuplicates) parsed.preferences.dismissedDuplicates = [];
     if (!parsed.waitingFor) parsed.waitingFor = [];
     if (!parsed.people) parsed.people = [];
+    if (!parsed.scheduledEvents) parsed.scheduledEvents = [];
     return parsed;
   } catch {
     return null;
@@ -124,6 +147,7 @@ function toLocalState(s: ServerAppState): AppState {
     captures: raw.captures ?? [],
     waitingFor: raw.waitingFor ?? [],
     people: raw.people ?? [],
+    scheduledEvents: raw.scheduledEvents ?? [],
     preferences: {
       ...defaultPreferences,
       ...(raw.preferences ?? {}),
@@ -374,6 +398,8 @@ function useAppState() {
       } : person),
     })), [update]);
 
+  const addScheduledEvent = useCallback((event: Omit<ScheduledEvent, 'id' | 'created_at'>) =>
+    update((s) => ({ ...s, scheduledEvents: [{ ...event, id: `se${Date.now()}`, created_at: new Date().toISOString() }, ...s.scheduledEvents] })), [update]);
   const addCapture = useCallback((text: string) =>
     update((s) => ({ ...s, captures: [{ id: `c${Date.now()}`, text, createdAt: 'Just now', converted: false }, ...s.captures] })), [update]);
 
@@ -401,12 +427,13 @@ function useAppState() {
       preferences: defaultPreferences,
       waitingFor: [],
       people: [],
+      scheduledEvents: [],
     };
     setState(seedState);
     setNotice('Your sample day is back.');
   }, []);
 
-  return { state, isLoading: isServerLoading || !state, update, toggleTask, removeTask, addTask, editTask, addCapture, addPerson, editPerson, removePerson, logConnection, reset, notice, setNotice };
+  return { state, isLoading: isServerLoading || !state, update, toggleTask, removeTask, addTask, editTask, addCapture, addPerson, addScheduledEvent,  editPerson, removePerson, logConnection, reset, notice, setNotice };
 }
 
 function hexToHsl(hex: string) {
@@ -447,6 +474,59 @@ function useLiveDate() {
   }, []);
 
   return now;
+}
+
+function playReminderChime() {
+  const audioWindow = window as Window & { webkitAudioContext?: typeof AudioContext };
+  const AudioContextConstructor = window.AudioContext ?? audioWindow.webkitAudioContext;
+  if (!AudioContextConstructor) return;
+  try {
+    const context = new AudioContextConstructor();
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(740, context.currentTime);
+    gain.gain.setValueAtTime(0.0001, context.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.16, context.currentTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.45);
+    oscillator.connect(gain).connect(context.destination);
+    oscillator.start();
+    oscillator.stop(context.currentTime + 0.46);
+    oscillator.addEventListener('ended', () => context.close());
+  } catch {
+    // A browser may require a prior user interaction before playing audio.
+  }
+}
+
+function useReminderNotifications() {
+  const supported = typeof window !== 'undefined' && 'Notification' in window;
+  const [permission, setPermission] = useState<NotificationPermission | 'unsupported'>(() => supported ? Notification.permission : 'unsupported');
+  const { data: reminders = [] } = useGetAssistantReminders(undefined, {
+    query: { queryKey: getGetAssistantRemindersQueryKey(), enabled: supported && permission === 'granted', refetchInterval: 60_000, refetchOnWindowFocus: true },
+  });
+
+  useEffect(() => {
+    if (permission !== 'granted') return;
+    reminders.forEach((reminder) => {
+      const key = `my-day-reminder:${reminder.id}:${reminder.reminder_datetime}`;
+      if (sessionStorage.getItem(key)) return;
+      sessionStorage.setItem(key, 'shown');
+      playReminderChime();
+      new Notification('My Day reminder', { body: reminder.task_title });
+    });
+  }, [permission, reminders]);
+
+  const requestPermission = async () => {
+    if (!supported) return;
+    setPermission(await Notification.requestPermission());
+  };
+
+  return { supported, permission, requestPermission };
+}
+
+function ReminderPermission({ reminder }: { reminder: ReturnType<typeof useReminderNotifications> }) {
+  if (!reminder.supported || reminder.permission === 'granted') return null;
+  return <div className="reminder-permission-card" role="status"><Bell size={17} /><div><strong>Gentle reminders are ready.</strong><span>Allow notifications and My Day will chime when it is time.</span></div><button className="button button-primary" onClick={reminder.requestPermission}>{reminder.permission === 'denied' ? 'Open browser settings' : 'Allow reminders'}</button></div>;
 }
 
 function formatPersonDate(value?: string) {
@@ -830,225 +910,396 @@ function DuplicateReviewModal({ pairs, onClose, onKeepBoth, onRemoveTask }: { pa
   </div>;
 }
 
-function Plan({ app }: { app: ReturnType<typeof useAppState> }) {
-  const { state, toggleTask, removeTask, addTask, editTask, setNotice, update } = app;
-  const [query, setQuery] = useState('');
-  const [filter, setFilter] = useState('All');
-  const [modal, setModal] = useState<{ open: boolean; task?: Task }>({ open: false });
+const HOURS = Array.from({ length: 24 }, (_, i) => i);
 
-  // Real Google Calendar data — navigable week
-  const [weekOffset, setWeekOffset] = useState(0);
-  const weekStart = (() => {
-    const now = new Date();
-    const dow = now.getDay();
-    const diff = dow === 0 ? -6 : 1 - dow; // shift to Monday
-    const monday = new Date(now);
-    monday.setDate(now.getDate() + diff + weekOffset * 7);
-    monday.setHours(0, 0, 0, 0);
-    return monday;
-  })();
-  const weekDays = Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(weekStart);
-    d.setDate(weekStart.getDate() + i);
+function formatTimeLabel(hour: number) {
+  if (hour === 0) return '12 AM';
+  if (hour < 12) return `${hour} AM`;
+  if (hour === 12) return '12 PM';
+  return `${hour - 12} PM`;
+}
+
+function TimeGrid({ 
+  date, 
+  view, 
+  calendarEvents, 
+  scheduledEvents,
+  onAddScheduledEvent
+}: { 
+  date: Date, 
+  view: 'day'|'week', 
+  calendarEvents: CalendarEvent[], 
+  scheduledEvents: ScheduledEvent[],
+  onAddScheduledEvent?: () => void
+}) {
+  const days = view === 'week' ? Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(date);
+    d.setDate(date.getDate() - date.getDay() + 1 + i);
+    d.setHours(0,0,0,0);
+    return d;
+  }) : [date];
+  
+  const now = useLiveDate();
+  const currentHour = now.getHours() + now.getMinutes() / 60;
+  
+  const allEvents = useMemo(() => {
+    const events: Array<{ id: string; title: string; start: Date; end: Date; allDay: boolean; color: string; isScheduled?: boolean }> = [];
+    calendarEvents.forEach(e => {
+      events.push({
+        id: e.id,
+        title: e.title,
+        start: new Date(e.start),
+        end: new Date(e.end),
+        allDay: e.allDay,
+        color: e.color || e.calendarColor || 'var(--primary)'
+      });
+    });
+    scheduledEvents.forEach(e => {
+      events.push({
+        id: e.id,
+        title: e.task_title,
+        start: new Date(e.start_datetime),
+        end: new Date(e.end_datetime),
+        allDay: false,
+        color: 'var(--primary)',
+        isScheduled: true
+      });
+    });
+    return events;
+  }, [calendarEvents, scheduledEvents]);
+
+  return (
+    <div className="time-grid-wrapper">
+      <div className="time-grid-header">
+        <div className="time-grid-header-spacer" />
+        {days.map(d => {
+          const isToday = d.toDateString() === new Date().toDateString();
+          return (
+            <div key={d.toISOString()} className={`time-grid-header-day ${isToday ? 'is-today' : ''}`}>
+               <div className="day-name">{d.toLocaleDateString('default', { weekday: 'short' })}</div>
+               <div className="day-date">{d.getDate()}</div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="time-grid-body">
+        <div className="time-grid-times">
+          {HOURS.map(h => (
+            <div key={h} className="time-grid-hour-label">{formatTimeLabel(h)}</div>
+          ))}
+        </div>
+        <div className="time-grid-days">
+          {days.map(d => {
+            const isToday = d.toDateString() === new Date().toDateString();
+            const dayEvents = allEvents.filter(e => e.start.toDateString() === d.toDateString() && !e.allDay);
+            return (
+              <div key={d.toISOString()} className="time-grid-day">
+                {HOURS.map(h => (
+                  <div key={h} className="time-grid-gridline" />
+                ))}
+                {isToday && (
+                  <div className="current-time-line" style={{ top: `${currentHour * 60}px` }} />
+                )}
+                {dayEvents.map(e => {
+                  const startHour = e.start.getHours() + e.start.getMinutes() / 60;
+                  const durationHours = Math.max((e.end.getTime() - e.start.getTime()) / 3600000, 0.25);
+                  const top = startHour * 60;
+                  const height = durationHours * 60;
+                  return (
+                    <div 
+                      key={e.id} 
+                      className={`time-grid-event ${e.isScheduled ? 'is-scheduled' : ''}`}
+                      style={{
+                        top: `${top}px`,
+                        height: `${height}px`,
+                      }}
+                    >
+                      <span className="time-grid-event-title">{e.title}</span>
+                      <span className="time-grid-event-time">
+                        {e.start.toLocaleTimeString([], {hour: 'numeric', minute:'2-digit'})}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Plan({ app }: { app: ReturnType<typeof useAppState> }) {
+  const { state, toggleTask } = app;
+  const [date, setDate] = useState(() => {
+    const d = new Date();
+    d.setHours(0,0,0,0);
     return d;
   });
-  const todayMidnight = new Date(); todayMidnight.setHours(0, 0, 0, 0);
+  const [view, setView] = useState<'day'|'week'>('week');
 
-  // Selected day drives the event list; defaults to today
-  const [selectedDay, setSelectedDay] = useState<Date>(() => {
-    const d = new Date(); d.setHours(0, 0, 0, 0); return d;
-  });
+  const weekStart = new Date(date);
+  const diff = weekStart.getDay() === 0 ? -6 : 1 - weekStart.getDay();
+  weekStart.setDate(weekStart.getDate() + diff);
 
-  // When the week changes, auto-select today if visible, otherwise the week start
-  useEffect(() => {
-    const todayInNewWeek = weekDays.find(d => d.getTime() === todayMidnight.getTime());
-    setSelectedDay(todayInNewWeek ?? new Date(weekStart));
-  }, [weekOffset]); // eslint-disable-line react-hooks/exhaustive-deps
+  const weekEnd = new Date(weekStart);
+  weekEnd.setDate(weekStart.getDate() + 6);
 
-  // Use local date components to avoid UTC offset shifting the date string
   const localDateStr = (d: Date) => {
     const y = d.getFullYear();
     const m = String(d.getMonth() + 1).padStart(2, '0');
     const day = String(d.getDate()).padStart(2, '0');
     return `${y}-${m}-${day}`;
   };
-  const eventsDate = localDateStr(selectedDay);
-  const weekMonthLabel = (() => {
-    const last = weekDays[6];
-    if (last.getMonth() !== weekStart.getMonth()) {
-      return `${weekStart.toLocaleString('default', { month: 'short' })} – ${last.toLocaleString('default', { month: 'long', year: 'numeric' })}`;
-    }
-    return weekStart.toLocaleString('default', { month: 'long', year: 'numeric' });
-  })();
-  const today = localDateStr(new Date());
-  const eventsDateLabel = eventsDate === today
-    ? 'Today'
-    : new Date(eventsDate + 'T00:00:00').toLocaleDateString('default', { weekday: 'short', month: 'short', day: 'numeric' });
-  const { data: calendarList } = useGetCalendarList();
-  const { data: calendarEvents, isLoading: calEventsLoading } = useGetCalendarEvents({ date: eventsDate });
-  const { data: calendarStatus } = useGetCalendarStatus();
-  const weekStartStr = localDateStr(weekStart);
-  const { data: weekSummary } = useGetCalendarWeekSummary({ weekStart: weekStartStr });
 
-  // Auto-mark calendar as connected when the API confirms it
-  useEffect(() => {
-    if (calendarStatus && (calendarStatus as { connected: boolean }).connected && state?.preferences.calendarConnected === 'none') {
-      update(s => ({ ...s, preferences: { ...s.preferences, calendarConnected: 'google' as const } }));
-    }
-  }, [calendarStatus]); // eslint-disable-line react-hooks/exhaustive-deps
-  const [waitingName, setWaitingName] = useState('');
-  const [waitingItem, setWaitingItem] = useState('');
-
-  if (!state) return null;
-
-  const visibleEvents = (calendarEvents as Array<{ id: string; title: string; start: string; end: string; allDay: boolean; calendarColor?: string | null; calendarId?: string }> ?? []).filter(ev => {
-    const pref = state.preferences.calendarPrefs?.[ev.calendarId ?? ''];
-    return pref === undefined || pref.visible !== false;
+  const { data: calendarEvents = [] } = useGetCalendarEvents({
+    start: localDateStr(weekStart),
+    end: localDateStr(weekEnd)
   });
 
-  const visible = state.tasks.filter((task) => (filter === 'All' || task.due === filter || (filter === 'Open' && !task.done) || (filter === 'Done' && task.done)) && task.title.toLowerCase().includes(query.toLowerCase()));
-  
-  const saveTask = (data: Omit<Task, 'id' | 'done'>) => {
-    if (modal.task) editTask(modal.task.id, data); else addTask(data);
-    setModal({ open: false }); setNotice(modal.task ? 'Task updated.' : 'Added to your plan.');
+  const scheduledEvents = state?.scheduledEvents || [];
+
+  const changeDate = (days: number) => {
+    const newDate = new Date(date);
+    newDate.setDate(newDate.getDate() + days);
+    setDate(newDate);
   };
 
-  const addWaiting = () => {
-    if (!waitingName.trim() || !waitingItem.trim()) return;
-    app.update(s => ({
-      ...s,
-      waitingFor: [...(s.waitingFor || []), { id: `w${Date.now()}`, person: waitingName.trim(), item: waitingItem.trim(), addedAt: new Date().toISOString() }]
-    }));
-    setWaitingName('');
-    setWaitingItem('');
-    setNotice('Added to Waiting For.');
-  };
+  return (
+    <div className="page-wrap plan-page">
+      <PageHeader 
+        eyebrow="Schedule & Plan" 
+        title="Your Time" 
+        subtitle="The shape of your week and the tasks that fill it."
+        action={
+          <div className="plan-header-actions">
+            <div className="view-toggles">
+              <button className={`button ${view === 'day' ? 'button-primary' : 'button-ghost'}`} onClick={() => setView('day')}>Day</button>
+              <button className={`button ${view === 'week' ? 'button-primary' : 'button-ghost'}`} onClick={() => setView('week')}>Week</button>
+            </div>
+            <div className="date-nav">
+              <button className="icon-button" onClick={() => changeDate(view === 'day' ? -1 : -7)} aria-label="Previous"><ArrowLeft size={16}/></button>
+              <span className="date-display">
+                {view === 'day' ? date.toLocaleDateString('default', { month: 'long', day: 'numeric', year: 'numeric' }) 
+                : `${weekStart.toLocaleDateString('default', { month: 'short', day: 'numeric' })} – ${weekEnd.toLocaleDateString('default', { month: 'short', day: 'numeric', year: 'numeric' })}`}
+              </span>
+              <button className="icon-button" onClick={() => changeDate(view === 'day' ? 1 : 7)} aria-label="Next"><ArrowRight size={16}/></button>
+            </div>
+          </div>
+        }
+      />
 
-  const removeWaiting = (id: string) => {
-    app.update(s => ({ ...s, waitingFor: s.waitingFor.filter(w => w.id !== id) }));
-  };
-
-  return <div className="page-wrap"><PageHeader eyebrow="The week, in view" title={<>Make a plan that <span className="serif">breathes.</span></>} subtitle="A flexible shape for the things you want to move forward." action={<button className="button button-primary" onClick={() => setModal({ open: true })} data-testid="button-add-task"><Plus size={16} /> Add task</button>} /><div className="plan-toolbar"><div className="search-field"><Search size={15} /><input className="field" type="search" placeholder="Find a task…" value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Search tasks" data-testid="input-search-tasks" /></div><select className="field select-field" value={filter} onChange={(event) => setFilter(event.target.value)} aria-label="Filter tasks" data-testid="select-filter-tasks"><option>All</option><option>Open</option><option>Done</option><option>Today</option><option>Tomorrow</option></select><button className="button button-secondary" onClick={() => setModal({ open: true })} data-testid="button-add-task-toolbar"><Plus size={15} /> New task</button></div><div className="plan-grid"><section><div className="section-title"><h2>{filter === 'All' ? 'All open loops' : `${filter} tasks`}</h2><span>{visible.length} {visible.length === 1 ? 'task' : 'tasks'}</span></div><div className="task-list">{visible.map((task) => <TaskRow key={task.id} task={task} onToggle={() => { toggleTask(task.id); setNotice(task.done ? 'Back on the list.' : 'Nice. One less thing to carry.'); }} onDelete={() => { removeTask(task.id); setNotice('Task removed.'); }} onEdit={() => setModal({ open: true, task })} onReschedule={() => { update((s) => ({ ...s, tasks: s.tasks.map((t) => t.id === task.id ? { ...t, due: t.due === 'Today' ? 'Tomorrow' : 'Today' } : t) })); setNotice(task.due === 'Today' ? 'Moved to tomorrow.' : 'Brought back to today.'); }} />)}{visible.length === 0 && <div className="empty-state"><Search size={22} /><div>No tasks match that view.</div><button className="button button-ghost" onClick={() => { setQuery(''); setFilter('All'); }} data-testid="button-clear-task-filter">Clear filters</button></div>}</div>
-      <div style={{ marginTop: 40 }}><div className="section-title"><h2>Waiting For</h2><span>Keep track of dependencies</span></div><div className="task-list">{(state.waitingFor || []).map(w => <div key={w.id} className="task-row" style={{ gridTemplateColumns: '1fr auto', padding: '12px 16px' }}><div><strong style={{ fontSize: 13, display: 'block' }}>{w.person}</strong><span style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', display: 'block', marginTop: 2 }}>{w.item}</span></div><button className="icon-button" onClick={() => removeWaiting(w.id)}><Check size={16} /></button></div>)}<div className="task-row" style={{ gridTemplateColumns: '1fr 1.5fr auto', padding: '8px 12px', gap: 8, background: 'transparent' }}><input className="field" placeholder="Who?" value={waitingName} onChange={e => setWaitingName(e.target.value)} /><input className="field" placeholder="Waiting for what?" value={waitingItem} onChange={e => setWaitingItem(e.target.value)} onKeyDown={e => e.key === 'Enter' && addWaiting()} /><button className="button button-primary" style={{ minHeight: 36, padding: '0 12px' }} onClick={addWaiting}><Plus size={16} /></button></div></div></div></section><aside className="stack"><section className="card calendar-card"><div className="calendar-head"><button className="icon-button" onClick={() => setWeekOffset(o => o - 1)} aria-label="Previous week" data-testid="button-previous-week"><ArrowLeft size={16} /></button><strong>{weekMonthLabel}</strong><button className="icon-button" onClick={() => setWeekOffset(o => o + 1)} aria-label="Next week" data-testid="button-next-week"><ArrowRight size={16} /></button></div><div className="week-grid">{weekDays.map((day, index) => { const isToday = day.getTime() === todayMidnight.getTime(); const isSelected = day.getTime() === selectedDay.getTime(); return <div className={`day-cell${isToday ? ' today' : ''}${isSelected ? ' selected' : ''}`} key={index} role="button" tabIndex={0} aria-label={day.toLocaleDateString('default', { weekday: 'long', month: 'long', day: 'numeric' })} aria-pressed={isSelected} onClick={() => setSelectedDay(new Date(day))} onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && setSelectedDay(new Date(day))}><span>{['M','T','W','T','F','S','S'][index]}</span><b>{day.getDate()}</b>{weekSummary && (weekSummary as Record<string, number>)[localDateStr(day)] > 0 && <span className="day-event-dot" aria-hidden="true" />}</div>; })}</div><div style={{ fontSize: 12, fontWeight: 600, color: 'hsl(var(--foreground))', padding: '10px 0 4px' }}>{eventsDateLabel}</div>{calEventsLoading && <div style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', padding: '4px 0' }}>Loading calendar…</div>}{!calEventsLoading && calendarEvents && visibleEvents.length === 0 && <div style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', padding: '4px 0' }}>No events {eventsDateLabel === 'Today' ? 'today' : `on ${eventsDateLabel}`}.</div>}{!calEventsLoading && calendarEvents && visibleEvents.map((ev, i) => { const startTime = ev.allDay ? 'All day' : new Date(ev.start).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); const endTime = ev.allDay ? '' : new Date(ev.end).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); const userColor = state.preferences.calendarPrefs?.[ev.calendarId ?? '']?.color; const borderColor = userColor ?? ev.calendarColor ?? 'hsl(var(--primary))'; return <div className="calendar-event" key={ev.id} style={{ borderLeftColor: borderColor }}><strong>{ev.title}</strong><span>{eventsDateLabel} · {startTime}{endTime && !ev.allDay ? ` — ${endTime}` : ''}</span></div>; })}{!calEventsLoading && !calendarEvents && <div style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', padding: '8px 0' }}>Could not load calendar events.</div>}</section><section className="card calendar-card"><div className="section-title"><h2>Connected services</h2></div>{state.preferences.calendarConnected === 'none' ? (<div style={{ display: 'flex', gap: 10, flexDirection: 'column' }}><button className="button button-ghost" style={{ justifyContent: 'flex-start', border: '1px solid hsl(var(--border))' }} onClick={() => setNotice('Calendar connection requires authorization. Use the Me tab to connect after authorizing.')}><Calendar size={16} /> Google Calendar</button><button className="button button-ghost" style={{ justifyContent: 'flex-start', border: '1px solid hsl(var(--border))' }} onClick={() => setNotice('Calendar connection requires authorization. Use the Me tab to connect after authorizing.')}><Calendar size={16} /> Microsoft Outlook</button></div>) : (<div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 12, background: 'hsl(var(--secondary)/0.5)', borderRadius: 12 }}><div style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981' }} /><span style={{ fontSize: 13, fontWeight: 500 }}>{(() => {
-  if (!calendarList || (calendarList as unknown[]).length === 0) return 'Calendar connected';
-  const cList = calendarList as Array<{ id: string; provider: string }>;
-  const visibleCount = cList.filter(c => state.preferences.calendarPrefs?.[c.id]?.visible !== false).length;
-  const providers = Array.from(new Set(cList.map(c => c.provider === 'google' ? 'Google' : c.provider === 'outlook' ? 'Outlook' : c.provider)));
-  return `${visibleCount} calendar${visibleCount !== 1 ? 's' : ''} · ${providers.join(' · ')}`;
-})()}</span></div>)}</section><section className="soft-card" style={{ padding: 19 }}><div className="section-title"><h2>Today's capacity</h2><Gauge size={17} color="hsl(var(--primary))" /></div><div className="progress-bar"><div className="progress-fill" style={{ width: `${Math.min(100, (state.tasks.filter((t) => t.done).length / Math.max(1, state.tasks.length)) * 100)}%` }} /></div><p style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', lineHeight: 1.5, marginBottom: 0 }}>Leave a little margin. A plan is useful when life can still happen inside it.</p></section></aside></div>{modal.open && <TaskModal initial={modal.task} onClose={() => setModal({ open: false })} onSave={saveTask} />}</div>;
-}
-
-function Projects({ app }: { app: ReturnType<typeof useAppState> }) {
-  const { state, update, setNotice } = app;
-  const [adding, setAdding] = useState(false);
-  const [name, setName] = useState('');
-  const [description, setDescription] = useState('');
-  if (!state) return null;
-  return <div className="page-wrap"><PageHeader eyebrow="The bigger picture" title={<>Things worth <span className="serif">tending.</span></>} subtitle="Projects are containers, not obligations. Give each one a little shape." action={<button className="button button-primary" onClick={() => setAdding(true)} data-testid="button-add-project"><Plus size={16} /> New project</button>} /><button className="button button-primary mobile-only" style={{ marginBottom: 18 }} onClick={() => setAdding(true)} data-testid="button-add-project-mobile"><Plus size={16} /> New project</button>{adding && <div className="card" style={{ padding: 20, marginBottom: 20 }}><form style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr auto', gap: 10, alignItems: 'end' }} onSubmit={(event) => { event.preventDefault(); if (!name.trim()) return; update((s) => ({ ...s, projects: [{ id: `p${Date.now()}`, name: name.trim(), description: description || 'A project with room to grow.', color: '#a9cbbd', goal: 'Choose the next small step' }, ...s.projects] })); setName(''); setDescription(''); setAdding(false); setNotice('Project created.'); }}><div><label className="field-label" htmlFor="project-name">Project name</label><input autoFocus className="field" id="project-name" value={name} onChange={(event) => setName(event.target.value)} data-testid="input-project-name" /></div><div><label className="field-label" htmlFor="project-description">What is it for?</label><input className="field" id="project-description" value={description} onChange={(event) => setDescription(event.target.value)} data-testid="input-project-description" /></div><div style={{ display: 'flex', gap: 6 }}><button className="button button-primary" type="submit" data-testid="button-save-project">Create</button><button type="button" className="button button-ghost" onClick={() => setAdding(false)} data-testid="button-cancel-project">Cancel</button></div></form></div>}<div className="project-grid">{state.projects.map((project) => { const related = state.tasks.filter((task) => task.project === project.name); const done = related.filter((task) => task.done).length; const progress = related.length ? Math.round((done / related.length) * 100) : 0; return <article className="card project-card" key={project.id} data-testid={`card-project-${project.id}`}><div className="project-card-head"><div className="project-icon" style={{ background: project.color }}><FolderKanban size={17} /></div><button className="icon-button" onClick={() => { update((s) => ({ ...s, projects: s.projects.filter((p) => p.id !== project.id) })); setNotice('Project archived.'); }} aria-label={`Archive ${project.name}`} data-testid={`button-archive-project-${project.id}`}><Archive size={15} /></button></div><h2>{project.name}</h2><p>{project.description}</p><div className="progress-bar"><div className="progress-fill" style={{ width: `${progress}%`, background: project.color }} /></div><div className="project-foot"><span>{progress}% in motion</span><span>{related.length ? `${done} of ${related.length} done` : 'No tasks yet'}</span></div><div className="divider" style={{ margin: '19px 0 13px' }} /><div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}><TargetIcon /><span style={{ fontSize: 11, lineHeight: 1.4, color: 'hsl(var(--muted-foreground))' }}>{project.goal}</span></div></article>; })}</div>{state.projects.length === 0 && <div className="empty-state" style={{ marginTop: 20 }}><FolderKanban size={22} /><div>Your project shelf is clear.</div><button className="button button-primary" onClick={() => setAdding(true)} data-testid="button-create-first-project">Create a project</button></div>}</div>;
-}
-
-function TargetIcon() { return <div style={{ width: 20, height: 20, borderRadius: 7, background: 'hsl(var(--secondary))', color: 'hsl(var(--secondary-foreground))', display: 'grid', placeItems: 'center', flex: 'none' }}><CheckCircle2 size={12} /></div>; }
-
-function assistantReply(text: string) {
-  const lower = text.toLowerCase();
-  if (lower.includes('meeting') || lower.includes('call')) return "That sounds like a commitment with a shape. I would put it on the plan first, then decide what preparation is actually needed.";
-  if (lower.includes('buy') || lower.includes('book') || lower.includes('email') || lower.includes('send')) return "This has a clear action inside it. I found the smallest useful version: name the thing, give it a home, and let the rest wait.";
-  if (lower.includes('tired') || lower.includes('overwhelm') || lower.includes('too much')) return "You do not need to organize this feeling right now. Let\u2019s choose one low-lift action and leave the rest in the safe place.";
-  return "I\u2019m holding onto this with you. It does not need to become a project before it becomes clearer.";
-}
-function breakdownText(text: string) {
-  const cleaned = text.replace(/\s+/g, ' ').trim();
-  if (!cleaned) return [];
-  const pieces = cleaned.split(/[,.;]|\band then\b|\bafter that\b/i).map((piece) => piece.trim()).filter((piece) => piece.length > 3);
-  return (pieces.length > 1 ? pieces : [`Clarify the next small step for: ${cleaned}`]).slice(0, 4);
+      <div className="plan-layout">
+        <div className="plan-calendar-section">
+          <VisualCalendar />
+        </div>
+        <div className="plan-context-section">
+          <div className="context-card">
+            <h3>Focus Context</h3>
+            <p>Tasks that need your attention</p>
+            <div className="task-list">
+               {state?.tasks.filter(t => !t.done && t.priority === 'high').map(t => (
+                 <TaskRow key={t.id} task={t} onToggle={() => toggleTask(t.id)} />
+               ))}
+               {state?.tasks.filter(t => !t.done && t.priority === 'high').length === 0 && (
+                 <div className="empty-state">No high priority tasks.</div>
+               )}
+            </div>
+          </div>
+          <div className="context-card" style={{ marginTop: 24 }}>
+            <h3>Upcoming Thoughts</h3>
+            <p>Events extracted from voice captures</p>
+            <div className="scheduled-list">
+               {scheduledEvents.map(se => (
+                 <div key={se.id} className="scheduled-event-card">
+                   <Sparkles size={14} className="se-icon" />
+                   <div>
+                     <strong>{se.task_title}</strong>
+                     <span>{new Date(se.start_datetime).toLocaleString('default', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</span>
+                   </div>
+                 </div>
+               ))}
+               {scheduledEvents.length === 0 && (
+                 <div className="empty-state">No scheduled thoughts yet.</div>
+               )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function CapturePage({ app }: { app: ReturnType<typeof useAppState> }) {
-  const { state, update, addCapture, addTask, logConnection, setNotice } = app;
-  const [text, setText] = useState('');
-  const [reply, setReply] = useState('');
-  const [reconnectPersonId, setReconnectPersonId] = useState<string | null>(null);
-  const [listening, setListening] = useState(false);
-  const [removedParts, setRemovedParts] = useState<string[]>([]);
-  const textAreaRef = useRef<HTMLTextAreaElement>(null);
-  const parts = useMemo(() => breakdownText(text).filter((part) => !removedParts.includes(part)), [text, removedParts]);
+  const { state, addCapture, addScheduledEvent } = app;
+  const [transcript, setTranscript] = useState('');
+  const [interimTranscript, setInterimTranscript] = useState('');
+  const [isRecording, setIsRecording] = useState(false);
+  const [speechError, setSpeechError] = useState('');
+  const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
+  const parseMutation = useParseAssistantTranscript();
+  const [parsedResult, setParsedResult] = useState<AssistantParseResponse | null>(null);
 
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      textAreaRef.current?.focus();
-    }, 200);
-    return () => clearTimeout(timer);
-  }, []);
-
-  if (!state) return null;
-
-  const save = () => {
-    if (!text.trim()) return;
-    const cleaned = text.trim();
-    const lower = cleaned.toLowerCase();
-    const person = findPersonInText(cleaned, state.people);
-    const isReminder = lower.includes('remind me');
-    const soundsRecent = /\b(just|today|yesterday|talked|spoke|called|call|saw|met|connected)\b/.test(lower) && !/\b(haven't|have not|months|forever|long time)\b/.test(lower) && !isReminder;
-    const soundsStale = /\b(haven't|have not|months|forever|long time)\b/.test(lower);
-    addCapture(cleaned);
-    setReconnectPersonId(null);
-    if (lower.includes('who should i check in') || lower.includes('who should i reach out')) {
-      const suggestions = state.people.filter((item) => isPersonReadyForGentlePrompt(item)).slice(0, 3);
-      setReply(suggestions.length > 0 ? `A few gentle possibilities: ${suggestions.map((item) => item.name).join(', ')}. No pressure — just people who may feel good to reconnect with.` : 'Everyone is held for now. You can always tell me about someone new.');
-    } else if (person && soundsRecent) {
-      logConnection(person.id, cleaned, person.contactMethod);
-      setReply(`I’ve noted that you connected with ${person.name}. That’s all handled.`);
-    } else if (person && soundsStale) {
-      setReconnectPersonId(person.id);
-      setReply(`It sounds like ${person.name} has been on your mind. We can make the next step very small.`);
-    } else if (person && lower.includes('when did i last')) {
-      setReply(person.lastConnectedAt ? `Your last logged connection with ${person.name} was ${formatPersonDate(person.lastConnectedAt)}.` : `I don’t have a connection logged for ${person.name} yet.`);
-    } else if (person && isReminder) {
-      addTask({ title: `Connect with ${person.name}`, project: 'People & connections', due: 'Tomorrow', priority: 'low' });
-      setReply(`I added a gentle reminder to your plan to connect with ${person.name}.`);
-    } else {
-      setReply(assistantReply(cleaned));
-    }
-    setRemovedParts([]);
-    setNotice(person && soundsRecent ? `Connection with ${person.name} logged.` : 'Thought captured.');
-  };
-  const convert = () => { parts.forEach((part) => addTask({ title: part, project: 'Personal', due: 'Today', priority: 'medium' })); update((s) => ({ ...s, captures: s.captures.map((capture, index) => index === 0 ? { ...capture, converted: true } : capture) })); setNotice(`${parts.length} small steps added to your plan.`); };
-
-  const toggleListen = () => {
-    if (listening) {
-      setListening(false);
-      return;
-    }
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      setNotice('Voice capture is not available in this browser.');
-      return;
-    }
-    const recognition = new SpeechRecognition();
-    recognition.continuous = false;
-    recognition.interimResults = true;
-    recognition.lang = 'en-US';
-    
-    let baseText = text ? text + " " : "";
-    
-    recognition.onstart = () => setListening(true);
-    recognition.onresult = (event: any) => {
-      const transcript = Array.from(event.results).map((r: any) => r[0].transcript).join('');
-      setText(baseText + transcript);
-      setReply('');
-      setRemovedParts([]);
+  const startRecording = () => {
+    if (isRecording) return;
+    const speechWindow = window as Window & {
+      SpeechRecognition?: BrowserSpeechRecognitionConstructor;
+      webkitSpeechRecognition?: BrowserSpeechRecognitionConstructor;
     };
-    recognition.onerror = () => setListening(false);
-    recognition.onend = () => setListening(false);
-    
-    try {
-      recognition.start();
-    } catch(e) {
-      setListening(false);
+    const SpeechRecognition = speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setSpeechError('Voice input is not available in this browser. You can still type your thought.');
+      return;
     }
+    setSpeechError('');
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = navigator.language || 'en-US';
+    recognition.onresult = (event) => {
+      let finalText = '';
+      let interimText = '';
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const result = event.results[index];
+        if (result.isFinal) finalText += result[0].transcript;
+        else interimText += result[0].transcript;
+      }
+      if (finalText.trim()) setTranscript((current) => `${current}${current && !current.endsWith(' ') ? ' ' : ''}${finalText.trim()}`);
+      setInterimTranscript(interimText);
+    };
+    recognition.onerror = (event) => {
+      if (event.error !== 'aborted') setSpeechError(event.error === 'not-allowed' ? 'Microphone access was blocked. Please allow it and try again.' : 'I had trouble hearing that. Please try again.');
+    };
+    recognition.onend = () => {
+      setIsRecording(false);
+      setInterimTranscript('');
+      recognitionRef.current = null;
+    };
+    recognitionRef.current = recognition;
+    setIsRecording(true);
+    recognition.start();
   };
 
-  return <div className="page-wrap"><div className="capture-page"><PageHeader eyebrow="No sorting required" title={<>Say it before you <span className="serif">lose it.</span></>} subtitle="A private landing place for the thought circling your head." /><section className="card capture-box"><textarea ref={textAreaRef} className="capture-input" placeholder="What's taking up a little too much room in your mind?" value={text} onChange={(event) => { setText(event.target.value); setReply(''); setReconnectPersonId(null); setRemovedParts([]); }} aria-label="Brain dump" data-testid="textarea-brain-dump" /><div className="capture-footer"><div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginTop: 14, flex: 1, padding: '20px 0' }}><button className={`voice-button-large ${listening ? 'listening' : ''}`} onClick={toggleListen} aria-label={listening ? 'Stop voice capture' : 'Start voice-style capture'} data-testid="button-voice-capture"><Mic size={32} /></button><span style={{ fontSize: 13, fontWeight: 500, color: 'hsl(var(--muted-foreground))', marginTop: 16 }}>{listening ? "Listening…" : "Tap to speak"}</span></div></div><div style={{ display: 'flex', justifyContent: 'flex-end', borderTop: '1px solid hsl(var(--border))', paddingTop: 16, marginTop: 10 }}><button className="button button-primary" onClick={save} disabled={!text.trim()} data-testid="button-capture-thought"><Sparkles size={15} /> Make sense of this</button></div></section>{reply && <div className="assistant-note" data-testid="text-assistant-response"><div className="assistant-symbol"><Sparkles size={14} /></div><p>{reply}<br /><span style={{ display: 'block', marginTop: 6, color: 'hsl(var(--muted-foreground))', fontSize: 11 }}>This is a small built-in reflection based on your words, not a connected external AI service.</span>{reconnectPersonId && <span className="assistant-actions"><button className="button button-secondary" onClick={() => { setText(`Draft a casual text to ${state.people.find((person) => person.id === reconnectPersonId)?.name ?? 'them'}`); setReply('A simple, warm note is usually enough. You can make it sound like you.'); }} data-testid="button-draft-reconnection">Draft a casual text</button><button className="button button-secondary" onClick={() => { const person = state.people.find((item) => item.id === reconnectPersonId); if (person) addTask({ title: `Call ${person.name}`, project: 'People & connections', due: 'Tomorrow', priority: 'low' }); setReply('I left a soft reminder for later.'); setNotice('Reminder added to your plan.'); }} data-testid="button-remind-reconnection">Remind me later</button><button className="button button-ghost" onClick={() => { setReconnectPersonId(null); setReply('Okay. I’ll leave it here without adding anything.'); }}>Not now</button></span>}</p></div>}{reply && parts.length > 0 && <section className="card breakdown">{parts.length > 1 ? <h2 style={{ fontSize: 16, marginBottom: 16 }}>Want me to turn this into a realistic plan?</h2> : <div className="section-title"><h2>Possible small steps</h2><span>Nothing is committed yet</span></div>}{parts.map((part, index) => <div className="breakdown-row" key={`${part}-${index}`}><span className="priority-dot" /><span style={{ flex: 1 }}>{part}</span><button className="icon-button" onClick={() => setRemovedParts((current) => [...current, part])} aria-label={`Remove suggested step ${index + 1}`} data-testid={`button-remove-breakdown-${index}`}><X size={14} /></button></div>)}<div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14 }}><button className="button button-secondary" onClick={convert} data-testid="button-add-breakdown-to-plan"><ListChecks size={15} /> Add these to my plan</button></div></section>}<section style={{ marginTop: 35 }}><div className="section-title"><h2>Recent captures</h2><span>Only you can see these</span></div><div className="task-list">{state.captures.map((capture) => <div className="task-row" key={capture.id} data-testid={`row-capture-${capture.id}`}><div style={{ width: 22, height: 22, borderRadius: 7, background: 'hsl(var(--secondary))', display: 'grid', placeItems: 'center', color: 'hsl(var(--secondary-foreground))' }}><Brain size={13} /></div><div><div className="task-name" style={{ fontWeight: 500 }}>{capture.text}</div><div className="task-meta"><span>{capture.createdAt}</span>{capture.converted && <span className="task-tag">Added to plan</span>}</div></div><button className="icon-button" onClick={() => { update((s) => ({ ...s, captures: s.captures.filter((item) => item.id !== capture.id) })); setNotice('Capture deleted.'); }} aria-label="Delete capture" data-testid={`button-delete-capture-${capture.id}`}><Trash2 size={15} /></button></div>)}</div></section></div></div>;
+  const stopRecording = () => recognitionRef.current?.stop();
+
+  const handleProcess = () => {
+    if (!transcript.trim()) return;
+    parseMutation.mutate({
+      data: { transcript, now: new Date().toISOString() }
+    }, {
+      onSuccess: (res) => {
+        setParsedResult(res);
+      }
+    });
+  };
+
+  const handleSaveSchedule = () => {
+    if (!parsedResult) return;
+    addScheduledEvent({
+      task_title: parsedResult.task_title,
+      start_datetime: parsedResult.start_datetime,
+      end_datetime: parsedResult.end_datetime,
+      reminder_datetime: parsedResult.reminder_datetime
+    });
+    queryClient.invalidateQueries({ queryKey: ['/api/calendar/events'] });
+    setTranscript('');
+    setParsedResult(null);
+    app.setNotice("Saved to schedule");
+  };
+
+  const handleSaveCapture = () => {
+    if (!transcript.trim()) return;
+    addCapture(transcript);
+    setTranscript('');
+    app.setNotice("Captured as thought");
+  };
+
+  return (
+    <div className="page-wrap capture-page">
+      <PageHeader 
+        eyebrow="Capture" 
+        title="What's on your mind?" 
+        subtitle="Speak or type your thoughts. We'll extract the details." 
+      />
+
+      <div className="capture-container">
+        <textarea 
+          className="capture-textarea"
+          placeholder="Start speaking or typing..."
+          value={transcript}
+          onChange={e => setTranscript(e.target.value)}
+        />
+        
+        <div className="capture-actions">
+          <button
+            className={`voice-record-btn ${isRecording ? 'recording' : ''}`}
+            onPointerDown={startRecording}
+            onPointerUp={stopRecording}
+            onPointerLeave={stopRecording}
+            onPointerCancel={stopRecording}
+            onKeyDown={(event) => { if ((event.key === 'Enter' || event.key === ' ') && !event.repeat) startRecording(); }}
+            onKeyUp={(event) => { if (event.key === 'Enter' || event.key === ' ') stopRecording(); }}
+            aria-label={isRecording ? 'Release to finish recording' : 'Hold to record'}
+          >
+            <Mic size={28} />
+          </button>
+          <span className="voice-hint">{isRecording ? 'Listening… release when you are done.' : 'Press and hold to speak'}</span>
+          <div className="capture-buttons">
+             <button className="button button-ghost" onClick={handleSaveCapture}>Save as Note</button>
+             <button className="button button-primary" onClick={handleProcess} disabled={!transcript.trim() || parseMutation.isPending}>
+               {parseMutation.isPending ? 'Processing...' : 'Extract Schedule'} <Sparkles size={16} />
+             </button>
+          </div>
+        </div>
+        {interimTranscript && <p className="live-transcript" aria-live="polite">{interimTranscript}</p>}
+        {speechError && <p className="form-error" role="alert">{speechError}</p>}
+        {parseMutation.isError && <p className="form-error" role="alert">I couldn’t turn that into a schedule. Try adding a day or time.</p>}
+      </div>
+
+      {parsedResult && (
+        <div className="parsed-result-card">
+           <h3>Schedule Extracted</h3>
+           <div className="parsed-details">
+              <div className="detail-row">
+                <span className="label">Event</span>
+                <span className="value">{parsedResult.task_title}</span>
+              </div>
+              <div className="detail-row">
+                <span className="label">When</span>
+                <span className="value">{new Date(parsedResult.start_datetime).toLocaleString('default', { weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</span>
+              </div>
+              <div className="detail-row">
+                <span className="label">Until</span>
+                <span className="value">{new Date(parsedResult.end_datetime).toLocaleTimeString('default', { hour: 'numeric', minute: '2-digit' })}</span>
+              </div>
+              <div className="detail-row">
+                <span className="label">Remind me</span>
+                <span className="value">{new Date(parsedResult.reminder_datetime).toLocaleString('default', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</span>
+              </div>
+           </div>
+           <div className="parsed-actions" style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+             <button className="button button-ghost" onClick={() => setParsedResult(null)}>Cancel</button>
+             <button className="button button-primary" onClick={handleSaveSchedule}>Confirm & Save</button>
+           </div>
+        </div>
+      )}
+
+      {state && state.captures.length > 0 && (
+        <div style={{ marginTop: 60 }}>
+          <h3 style={{ fontSize: 16, marginBottom: 16 }}>Recent Notes</h3>
+          <div className="stack">
+            {state.captures.slice(0, 5).map(c => (
+              <div key={c.id} className="card" style={{ padding: 20 }}>
+                <p style={{ margin: '0 0 8px', fontSize: 15, fontFamily: 'var(--app-font-serif)' }}>{c.text}</p>
+                <span style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))' }}>{c.createdAt}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function Me({ app }: { app: ReturnType<typeof useAppState> }) {
@@ -1131,6 +1382,17 @@ function DuplicateSurface({ app }: { app: ReturnType<typeof useAppState> }) {
 
 function NotFoundView() { return <div className="page-wrap"><div className="empty-state" style={{ marginTop: '15vh' }}><Compass size={25} /><h1 className="page-title" style={{ fontSize: 35 }}>A quiet dead end.</h1><p>That page is not part of today.</p><Link className="button button-primary" href="/" data-testid="link-back-home">Back to today</Link></div></div>; }
 
+function Projects({ app }: { app: ReturnType<typeof useAppState> }) {
+  const { state, update, setNotice } = app;
+  if (!state) return null;
+  return <div className="page-wrap"><PageHeader eyebrow="The bigger picture" title={<>Things worth <span className="serif">tending.</span></>} subtitle="Projects are containers, not obligations. Give each one a little shape." /><div className="project-grid">{state.projects.map((project) => {
+    const related = state.tasks.filter((task) => task.project === project.name);
+    const complete = related.filter((task) => task.done).length;
+    const progress = related.length ? Math.round((complete / related.length) * 100) : 0;
+    return <article className="card project-card" key={project.id}><div className="project-card-head"><div className="project-icon" style={{ background: project.color }}><FolderKanban size={17} /></div><button className="icon-button" onClick={() => { update((current) => ({ ...current, projects: current.projects.filter((item) => item.id !== project.id) })); setNotice('Project archived.'); }} aria-label={`Archive ${project.name}`}><Archive size={15} /></button></div><h2>{project.name}</h2><p>{project.description}</p><div className="progress-bar"><div className="progress-fill" style={{ width: `${progress}%`, background: project.color }} /></div><small>{complete} of {related.length} tasks complete</small></article>;
+  })}</div></div>;
+}
+
 function Router({ app }: { app: ReturnType<typeof useAppState> }) {
   return <Shell><ErrorBoundary resetKey={window.location.pathname}><Switch><Route path="/" component={() => <Home app={app} />} /><Route path="/plan" component={() => <Plan app={app} />} /><Route path="/people" component={() => <People app={app} />} /><Route path="/projects" component={() => <Projects app={app} />} /><Route path="/capture" component={() => <CapturePage app={app} />} /><Route path="/me" component={() => <Me app={app} />} /><Route component={NotFoundView} /></Switch></ErrorBoundary></Shell>;
 }
@@ -1138,6 +1400,7 @@ function Router({ app }: { app: ReturnType<typeof useAppState> }) {
 /** Inner app — runs inside QueryClientProvider so hooks work */
 function AppInner() {
   const app = useAppState();
+  const reminder = useReminderNotifications();
 
   if (app.isLoading) {
     return (
@@ -1151,6 +1414,7 @@ function AppInner() {
   return (
     <TooltipProvider>
       <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
+        <ReminderPermission reminder={reminder} />
         <Router app={app} />
         <DuplicateSurface app={app} />
       </WouterRouter>

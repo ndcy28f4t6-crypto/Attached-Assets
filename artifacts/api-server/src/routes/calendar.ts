@@ -2,6 +2,9 @@ import { Router, type IRouter } from "express";
 import { ReplitConnectors } from "@replit/connectors-sdk";
 import { pool } from "@workspace/db";
 import { getValidToken } from "../lib/googleAuth.js";
+import { appStateTable } from "@workspace/db/schema";
+import { db } from "@workspace/db";
+import { eq } from "drizzle-orm";
 
 const router: IRouter = Router();
 
@@ -53,6 +56,49 @@ type CalendarEventEntry = {
   color: string | null;
   calendarColor: string | null;
 };
+
+type LocalScheduledEvent = {
+  id: string;
+  task_title: string;
+  start_datetime: string;
+  end_datetime: string;
+};
+
+async function getScheduledEvents(sessionId: string, start: Date, end: Date): Promise<CalendarEventEntry[]> {
+  const rows = await db
+    .select({ state: appStateTable.state })
+    .from(appStateTable)
+    .where(eq(appStateTable.sessionId, sessionId));
+  const state = rows[0]?.state as { scheduledEvents?: unknown[] } | undefined;
+  const stored = Array.isArray(state?.scheduledEvents) ? state.scheduledEvents : [];
+  return stored.flatMap((value): CalendarEventEntry[] => {
+    if (!value || typeof value !== "object") return [];
+    const event = value as Partial<LocalScheduledEvent>;
+    if (
+      typeof event.id !== "string" ||
+      typeof event.task_title !== "string" ||
+      typeof event.start_datetime !== "string" ||
+      typeof event.end_datetime !== "string"
+    ) return [];
+    const eventStart = new Date(event.start_datetime);
+    const eventEnd = new Date(event.end_datetime);
+    if (Number.isNaN(eventStart.getTime()) || Number.isNaN(eventEnd.getTime())) return [];
+    if (eventEnd <= start || eventStart >= end) return [];
+    return [{
+      id: `my-day::${event.id}`,
+      title: event.task_title,
+      start: event.start_datetime,
+      end: event.end_datetime,
+      allDay: false,
+      location: null,
+      description: "Scheduled from voice capture",
+      calendarId: "my-day",
+      calendarName: "My Day",
+      color: null,
+      calendarColor: "#e88870",
+    }];
+  });
+}
 
 type StoredAccount = {
   id: number;
@@ -208,12 +254,14 @@ router.get("/calendar/events", async (req, res): Promise<void> => {
     const connectors = getConnectors();
 
     const dateParam = typeof req.query["date"] === "string" ? req.query["date"] : null;
+    const startParam = typeof req.query["start"] === "string" ? req.query["start"] : null;
+    const endParam = typeof req.query["end"] === "string" ? req.query["end"] : null;
     const targetDate = dateParam ? new Date(dateParam) : new Date();
 
-    const dayStart = new Date(targetDate);
-    dayStart.setHours(0, 0, 0, 0);
-    const dayEnd = new Date(targetDate);
-    dayEnd.setHours(23, 59, 59, 999);
+    const dayStart = startParam ? new Date(startParam) : new Date(targetDate);
+    const dayEnd = endParam ? new Date(endParam) : new Date(targetDate);
+    if (!startParam) dayStart.setHours(0, 0, 0, 0);
+    if (!endParam) dayEnd.setHours(23, 59, 59, 999);
 
     const timeMin = encodeURIComponent(toISOWithOffset(dayStart));
     const timeMax = encodeURIComponent(toISOWithOffset(dayEnd));
@@ -331,6 +379,7 @@ router.get("/calendar/events", async (req, res): Promise<void> => {
     const events: CalendarEventEntry[] = [
       ...googleEventResults.flat(),
       ...outlookEventResults.flat(),
+      ...(await getScheduledEvents(req.sessionID, dayStart, dayEnd)),
     ].sort((a, b) => {
       if (a.allDay && !b.allDay) return -1;
       if (!a.allDay && b.allDay) return 1;

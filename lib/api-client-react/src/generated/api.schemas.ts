@@ -63,6 +63,29 @@ export interface CalendarStatus {
   googleAccounts?: CalendarAccount[];
 }
 
+export interface AssistantParseRequest {
+  /** @minLength 1 */
+  transcript: string;
+  /** Current browser time used to resolve relative dates */
+  now?: string;
+}
+
+export interface AssistantParseResponse {
+  task_title: string;
+  start_datetime: string;
+  end_datetime: string;
+  reminder_datetime: string;
+}
+
+export interface ScheduledEvent {
+  id: string;
+  task_title: string;
+  start_datetime: string;
+  end_datetime: string;
+  reminder_datetime: string;
+  created_at: string;
+}
+
 export interface ErrorResponse {
   error: string;
 }
@@ -187,13 +210,29 @@ export interface AppState {
   preferences: Preferences;
   waitingFor: WaitingFor[];
   people: Person[];
+  scheduledEvents: ScheduledEvent[];
 }
+
+export type GetAssistantRemindersParams = {
+/**
+ * ISO timestamp; only reminders due at or after this time are returned
+ */
+since?: string;
+};
 
 export type GetCalendarEventsParams = {
 /**
  * ISO date string (YYYY-MM-DD), defaults to today
  */
 date?: string;
+/**
+ * ISO start timestamp for a range query
+ */
+start?: string;
+/**
+ * ISO end timestamp for a range query
+ */
+end?: string;
 };
 
 export type GetCalendarWeekSummaryParams = {

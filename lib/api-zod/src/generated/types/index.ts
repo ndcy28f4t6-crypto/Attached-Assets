@@ -7,6 +7,8 @@
  */
 
 export * from './appState';
+export * from './assistantParseRequest';
+export * from './assistantParseResponse';
 export * from './calendarAccount';
 export * from './calendarEvent';
 export * from './calendarMeta';
@@ -16,6 +18,7 @@ export * from './calendarStatus';
 export * from './capture';
 export * from './connectionLog';
 export * from './errorResponse';
+export * from './getAssistantRemindersParams';
 export * from './getCalendarEventsParams';
 export * from './getCalendarWeekSummary200';
 export * from './getCalendarWeekSummaryParams';
@@ -28,6 +31,7 @@ export * from './preferencesCalendarConnected';
 export * from './preferencesCalendarPrefs';
 export * from './preferencesFontStyle';
 export * from './project';
+export * from './scheduledEvent';
 export * from './task';
 export * from './taskPriority';
 export * from './waitingFor';
