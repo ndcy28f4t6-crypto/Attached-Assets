@@ -1,4 +1,4 @@
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type Request } from "express";
 import crypto from "node:crypto";
 import { pool } from "@workspace/db";
 import {
@@ -9,13 +9,15 @@ import {
 
 const router: IRouter = Router();
 
-function getRedirectUri(req: Parameters<typeof router.get>[1] extends (req: infer R, ...rest: unknown[]) => unknown ? R : never): string {
-  // Prefer the explicit dev-domain env var so the redirect URI is stable.
-  const devDomain = process.env.REPLIT_DEV_DOMAIN;
-  if (devDomain) return `https://${devDomain}/api/auth/google/callback`;
-  // Fallback: derive from the incoming request
-  const host = req.headers["x-forwarded-host"] ?? req.headers.host ?? "localhost";
-  return `https://${host}/api/auth/google/callback`;
+function getRedirectUri(req: Request): string {
+  // OAuth must use the same public host that initiated the request. This works
+  // for both the Replit preview domain and a published domain.
+  const forwardedHost = req.get("x-forwarded-host");
+  const host = forwardedHost?.split(",")[0].trim() || req.get("host");
+  if (!host) throw new Error("Unable to determine the public OAuth host");
+  const forwardedProto = req.get("x-forwarded-proto")?.split(",")[0].trim();
+  const protocol = forwardedProto || (host.startsWith("localhost") ? "http" : "https");
+  return `${protocol}://${host}/api/auth/google/callback`;
 }
 
 /** GET /api/auth/google/start — redirect the browser to Google's OAuth screen */
