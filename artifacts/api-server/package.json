@@ -9,8 +9,7 @@
     "start": "tsx src/index.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
-  }
-}
+  },
   "dependencies": {
     "@replit/connectors-sdk": "^0.4.1",
     "@types/connect-pg-simple": "^7.0.3",
