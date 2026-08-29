@@ -23,33 +23,33 @@ async function ensureSchema(): Promise<void> {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS app_state (
       session_id TEXT PRIMARY KEY,
-      state      JSONB       NOT NULL,
-      revision   INTEGER     NOT NULL DEFAULT 0,
+      state     JSONB       NOT NULL,
+      revision  INTEGER     NOT NULL DEFAULT 0,
       updated_at TIMESTAMP   NOT NULL DEFAULT NOW()
     )
   `);
-  // Older workspaces may already have app_state without the concurrency column.
-  // Keep startup self-healing so existing sessions continue to load.
+
+  // Self-healing migration for existing sessions
   await pool.query(`
     ALTER TABLE app_state
     ADD COLUMN IF NOT EXISTS revision INTEGER NOT NULL DEFAULT 0
   `);
 
-  // connect-pg-simple session table: keeps sessions alive across API restarts.
-  // Defined inline because the table.sql asset is not available after esbuild bundling.
+  // connect-pg-simple session table
   await pool.query(`
     CREATE TABLE IF NOT EXISTS "session" (
-      "sid"    VARCHAR      NOT NULL COLLATE "default",
-      "sess"   JSON         NOT NULL,
-      "expire" TIMESTAMP(6) NOT NULL,
+      "sid"     VARCHAR      NOT NULL COLLATE "default",
+      "sess"    JSON         NOT NULL,
+      "expire"  TIMESTAMP(6) NOT NULL,
       CONSTRAINT "session_pkey" PRIMARY KEY ("sid") NOT DEFERRABLE INITIALLY IMMEDIATE
     )
   `);
+  
   await pool.query(`
     CREATE INDEX IF NOT EXISTS "IDX_session_expire" ON "session" ("expire")
   `);
 
-  // Google Calendar OAuth tokens, one row per (session, Google account).
+  // Google Calendar OAuth tokens
   await pool.query(`
     CREATE TABLE IF NOT EXISTS calendar_accounts (
       id            SERIAL PRIMARY KEY,
@@ -65,17 +65,23 @@ async function ensureSchema(): Promise<void> {
   `);
 }
 
-ensureSchema()
-  .then(() => {
-    app.listen(port, "0.0.0.0", (err) => {
-      if (err) {
-        logger.error({ err }, "Error listening on port");
-        process.exit(1);
-      }
-      logger.info({ port }, "Server listening");
+async function startServer(): Promise<void> {
+  try {
+    await ensureSchema();
+    logger.info("Database schema initialized successfully.");
+
+    const server = app.listen(port, "0.0.0.0", () => {
+      logger.info({ port, host: "0.0.0.0" }, "Server listening successfully");
     });
-  })
-  .catch((err) => {
-    logger.error({ err }, "Failed to initialize database schema");
+
+    server.on("error", (err) => {
+      logger.error({ err }, "Error starting HTTP server");
+      process.exit(1);
+    });
+  } catch (err) {
+    logger.error({ err }, "Failed to initialize database schema or start server");
     process.exit(1);
-  });
+  }
+}
+
+startServer();
