@@ -23,9 +23,9 @@ async function ensureSchema(): Promise<void> {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS app_state (
       session_id TEXT PRIMARY KEY,
-      state      JSONB      NOT NULL,
-      revision   INTEGER    NOT NULL DEFAULT 0,
-      updated_at TIMESTAMP  NOT NULL DEFAULT NOW()
+      state      JSONB       NOT NULL,
+      revision   INTEGER     NOT NULL DEFAULT 0,
+      updated_at TIMESTAMP   NOT NULL DEFAULT NOW()
     )
   `);
   // Older workspaces may already have app_state without the concurrency column.
@@ -52,14 +52,14 @@ async function ensureSchema(): Promise<void> {
   // Google Calendar OAuth tokens, one row per (session, Google account).
   await pool.query(`
     CREATE TABLE IF NOT EXISTS calendar_accounts (
-      id           SERIAL PRIMARY KEY,
-      session_id   TEXT        NOT NULL REFERENCES "session"(sid) ON DELETE CASCADE,
-      google_sub   TEXT        NOT NULL,
-      email        TEXT        NOT NULL,
-      access_token TEXT        NOT NULL,
+      id            SERIAL PRIMARY KEY,
+      session_id    TEXT        NOT NULL REFERENCES "session"(sid) ON DELETE CASCADE,
+      google_sub    TEXT        NOT NULL,
+      email         TEXT        NOT NULL,
+      access_token  TEXT        NOT NULL,
       refresh_token TEXT,
       token_expiry  TIMESTAMPTZ,
-      created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
       CONSTRAINT uniq_session_google_sub UNIQUE (session_id, google_sub)
     )
   `);
@@ -67,7 +67,7 @@ async function ensureSchema(): Promise<void> {
 
 ensureSchema()
   .then(() => {
-    app.listen(port, (err) => {
+    app.listen(port, "0.0.0.0", (err) => {
       if (err) {
         logger.error({ err }, "Error listening on port");
         process.exit(1);
