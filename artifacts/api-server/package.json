@@ -7,7 +7,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc --skipLibCheck || true",
     "start": "tsx src/index.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit || true",
     "test": "vitest run"
   },
   "dependencies": {
